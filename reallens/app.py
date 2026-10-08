@@ -9,6 +9,7 @@ import io
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -91,6 +92,8 @@ def sanitize_image_bytes(raw_bytes: bytes) -> tuple[Image.Image, bytes]:
 
 def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[str, Any]:
     """Runs all detectors and fuses the resulting signals."""
+    t0 = time.perf_counter()
+
     # 1. Metadata check on raw input
     meta_res = analyze_metadata(raw_bytes)
 
@@ -123,8 +126,10 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
         gemini_res=gemini_res,
     )
 
+    elapsed = round(time.perf_counter() - t0, 3)
     fused["filename"] = filename
     fused["image_dimensions"] = f"{pil_img.width}x{pil_img.height}"
+    fused["time_taken_seconds"] = elapsed
     return fused
 
 
@@ -132,6 +137,12 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
 def index():
     """Renders the main single-page application."""
     return render_template("index.html")
+
+
+@app.route("/batch", methods=["GET"])
+def batch_page():
+    """Renders the batch test analysis page."""
+    return render_template("batch.html")
 
 
 @app.route("/health", methods=["GET"])
@@ -175,6 +186,62 @@ def analyze_endpoint():
     except Exception as exc:
         logger.exception("Error processing image upload")
         return jsonify({"status": "error", "message": f"Failed to analyze image: {str(exc)}"}), 500
+
+
+@app.route("/batch_analyze", methods=["POST"])
+def batch_analyze_endpoint():
+    """Analyzes a batch of uploaded image files."""
+    files = request.files.getlist("images")
+    if not files:
+        # Check single 'image' fallback
+        if "image" in request.files:
+            files = [request.files["image"]]
+        else:
+            return jsonify({"status": "error", "message": "No 'images' provided."}), 400
+
+    results = []
+    for file in files:
+        if not file or not file.filename:
+            continue
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "message": f"Unsupported format '{ext}'",
+            })
+            continue
+
+        try:
+            raw_bytes = file.read()
+            if len(raw_bytes) < 32:
+                results.append({
+                    "filename": file.filename,
+                    "status": "error",
+                    "message": "File corrupted or empty",
+                })
+                continue
+            res = analyze_image_bytes(raw_bytes, filename=file.filename)
+            results.append({
+                "filename": file.filename,
+                "status": "success",
+                "ai_percentage": res.get("ai_percentage"),
+                "verdict": res.get("verdict"),
+                "confidence": res.get("confidence"),
+                "time_taken_seconds": res.get("time_taken_seconds"),
+                "image_dimensions": res.get("image_dimensions"),
+                "summary": res.get("summary_reason"),
+                "disagreement_flag": res.get("disagreement_flag"),
+                "in_uncertain_zone": res.get("in_uncertain_zone"),
+            })
+        except Exception as exc:
+            results.append({
+                "filename": file.filename,
+                "status": "error",
+                "message": str(exc),
+            })
+
+    return jsonify({"status": "success", "total": len(results), "results": results})
 
 
 if __name__ == "__main__":

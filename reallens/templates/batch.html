@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RealLens - Batch Image Forensics & CSV Export</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="container" style="max-width: 1100px;">
+    <header>
+      <div class="brand">
+        <h1 class="brand-title">RealLens</h1>
+        <span class="brand-badge">Batch Mode v0.2</span>
+      </div>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <a href="/" class="nav-badge" style="color: #60A5FA; text-decoration: none; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 6px; background: rgba(96, 165, 250, 0.1); border: 1px solid rgba(96, 165, 250, 0.3);">← Single Image Analysis</a>
+        <div id="device-status" class="device-indicator">
+          Device: Checking...
+        </div>
+      </div>
+    </header>
+
+    <div class="disclaimer-banner">
+      <span style="font-size: 16px;">📁</span>
+      <div>
+        <strong>Batch Forensic Testing & Automated Evaluation.</strong>
+        Drop multiple images or an entire folder of photos to process them in sequence. Results can be inspected in real time and exported directly to CSV.
+      </div>
+    </div>
+
+    <section class="card" style="margin-bottom: 24px;">
+      <h2 class="card-title">Select Images for Batch Analysis</h2>
+      
+      <div id="batch-dropzone" class="dropzone">
+        <div class="dropzone-icon">📂</div>
+        <div class="dropzone-text"><strong>Click to select multiple images</strong> or drag & drop a batch</div>
+        <div class="dropzone-subtext">JPEG, PNG, WEBP, GIF (Supports multi-file selection)</div>
+        <input type="file" id="batch-file-input" multiple accept="image/jpeg,image/png,image/webp,image/gif,image/bmp">
+      </div>
+
+      <div id="batch-controls" style="display: none; margin-top: 16px; align-items: center; justify-content: space-between;">
+        <div id="batch-count" style="font-size: 14px; color: #94A3B8; font-weight: 500;">0 files selected</div>
+        <div style="display: flex; gap: 10px;">
+          <button id="batch-run-btn" class="btn" style="width: auto; padding: 10px 24px;">Run Batch Analysis</button>
+          <button id="batch-download-btn" class="btn" style="display: none; width: auto; padding: 10px 24px; background: #059669; border-color: #10B981;">📥 Download CSV</button>
+        </div>
+      </div>
+
+      <div id="batch-loading" class="loading-box" style="display: none;">
+        <div class="spinner"></div>
+        <div id="batch-progress-text">Analyzing batch... (0 / 0)</div>
+      </div>
+
+      <div id="batch-error-box" class="error-box" style="display: none;"></div>
+    </section>
+
+    <!-- Batch Results Table Card -->
+    <section id="batch-results-card" class="card" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 class="card-title" style="margin: 0;">Batch Inspection Summary</h3>
+        <div id="batch-stats-badge" style="font-size: 13px; color: #CBD5E1; font-family: monospace;"></div>
+      </div>
+
+      <table class="signal-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Filename</th>
+            <th>Dimensions</th>
+            <th>AI Probability</th>
+            <th>Verdict</th>
+            <th>Confidence</th>
+            <th>Latency</th>
+            <th>Reasoning / Flags</th>
+          </tr>
+        </thead>
+        <tbody id="batch-tbody">
+          <!-- Populated via JavaScript -->
+        </tbody>
+      </table>
+    </section>
+
+    <footer>
+      RealLens Forensic Engine • Batch Inspection Mode • High-Throughput Local Evaluation
+    </footer>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/batch.js') }}"></script>
+</body>
+</html>

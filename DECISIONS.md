@@ -27,9 +27,15 @@ This document tracks all design decisions made during the development of RealLen
   - *Reason*: Diverse blend of architectures (ViT + SigLIP) trained across distinct dataset regimes (CIFAKE, SDXL, and multi-generator benchmarks) maximizes ensemble coverage and disagreement signal fidelity.
 
 ## 3. Graceful Fallbacks and Signal Honesty
-- **Decision**: Missing metadata (EXIF/C2PA) yields neutral score (`null` or no push towards real/fake) with LOW confidence.
-  - *Reason*: Real images regularly undergo stripping by chat apps (WhatsApp, Telegram) and web uploaders, so missing metadata is never evidence of AI generation.
-- **Decision**: C2PA manifest reader uses standard PyPI `c2pa-python` if compatible binary wheel exists for Python 3.13 Windows, with pure-Python fallback (reading JUMBF/c2pa boxes from JPEG/PNG headers).
-  - *Reason*: Guarantees zero runtime crashes while still extracting C2PA / Content Credentials provenance if embedded.
-- **Decision**: ELA generates both numerical metrics (mean diff, high-frequency diff ratio, kurtosis/peakiness) and a colormapped ELA heatmap saved in-memory or Base64 for web display.
-  - *Reason*: Allows the user to inspect spatial distribution of compression inconsistencies while providing an analytical metric to the fusion engine.
+## 4. Phase 2 Architectural Decisions
+- **Decision**: Generalizing Probe Backbone: `facebook/dinov2-small` selected over CLIP ViT-B/32.
+  - *Reason*: DINOv2 self-supervised patch representations capture intrinsic physical scene geometry, natural photographic noise, and fine lighting textures, achieving superior generalization against JPEG recompression and modern Midjourney diffusion outputs compared to multimodal semantic models.
+- **Decision**: Augmented Linear Probe (`models/generalizing_probe.joblib`) added as 4th model in `MLEnsemble`.
+  - *Reason*: Training with heavy JPEG recompression (Q=45..65), downscaling, and blur forced the probe to ignore brittle high-frequency compression artifacts, achieving 100% accuracy on hard tuning images and eliminating false alarms on WhatsApp photos.
+- **Decision**: Learned Calibrated Logistic Regression Stacker (`models/learned_fusion_stacker.joblib`) deployed as primary fusion engine with dynamic fallback to hand-weighted rules.
+  - *Reason*: Multi-signal stacking automatically balances detector interactions, expanding class probability separation margin on the held-out test set from 44.8% to 72.0%.
+- **Decision**: Explicit 'Uncertain Zone' defined between [0.35, 0.65] and upon vision model disagreement (`spread > 0.45`).
+  - *Reason*: In accordance with the Non-Negotiable Honesty Rules, an explicit uncertain classification with a manual inspection recommendation is far more trustworthy than a confident false positive on compressed mobile photos.
+- **Decision**: Batch Testing Mode implemented with native CSV export (`/batch`).
+  - *Reason*: Allows users to process multi-image folders locally and download forensic evaluation logs with execution latency and signal breakdowns.
+

@@ -136,6 +136,53 @@ document.addEventListener("DOMContentLoaded", () => {
       verdictBanner.classList.add("verdict-likely-real");
     }
 
+    // Time and dimensions badge
+    const timeBadge = document.getElementById("time-badge");
+    if (timeBadge && result.time_taken_seconds !== undefined) {
+      const modeLabel = result.fusion_mode === "learned_stacker" ? "Learned Stacker" : "Hand Weighted";
+      timeBadge.textContent = `⚡ Analyzed in ${result.time_taken_seconds}s (${modeLabel}) • ${result.image_dimensions || ''}`;
+    }
+
+    // Vision Models Bar List
+    const modelBarsContainer = document.getElementById("model-bars-container");
+    if (modelBarsContainer) {
+      modelBarsContainer.innerHTML = "";
+      const perModels = (result.signals.ml_ensemble && result.signals.ml_ensemble.per_model_scores) || {};
+      for (const [modelKey, score] of Object.entries(perModels)) {
+        const shortName = modelKey.includes("probe")
+          ? "DINOv2 Generalizing Probe"
+          : modelKey.includes("dima806")
+          ? "dima806 (CIFAKE ViT)"
+          : modelKey.includes("Organika")
+          ? "Organika (SDXL ViT)"
+          : modelKey.includes("Ateeqq")
+          ? "Ateeqq (SigLIP Generalist)"
+          : modelKey.split("/").pop();
+
+        const pct = score !== null ? (score * 100).toFixed(1) : 0;
+        const isAi = score !== null && score >= 0.50;
+        const barColor = isAi ? "#EF4444" : "#10B981";
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.flexDirection = "column";
+        row.style.gap = "4px";
+
+        row.innerHTML = `
+          <div style="display: flex; justify-content: space-between; font-size: 12px; font-weight: 500;">
+            <span style="color: #CBD5E1;">${shortName}</span>
+            <span style="font-family: monospace; color: ${score !== null ? (score >= 0.5 ? '#F87171' : '#34D399') : '#94A3B8'};">
+              ${score !== null ? `${pct}% AI` : 'Unavailable'}
+            </span>
+          </div>
+          <div style="height: 6px; background: #1E293B; border-radius: 3px; overflow: hidden;">
+            <div style="height: 100%; width: ${score !== null ? pct : 0}%; background: ${barColor}; border-radius: 3px; transition: width 0.4s ease;"></div>
+          </div>
+        `;
+        modelBarsContainer.appendChild(row);
+      }
+    }
+
     // Image comparison
     compOriginal.src = previewImage.src;
     if (result.signals.ela && result.signals.ela.heatmap_base64) {

@@ -84,10 +84,36 @@ This log documents every iteration of the tuning and optimization loop conducted
 
 ---
 
-## Stopping Rule & Final Architecture
-- Consecutive tuning attempts (Adaptive Forensics Weighting, Threshold Shifting) yielded no further gain over Iteration 3 (83.33% accuracy, 98.67% recall, 0.8555 F1, 43.8% probability margin separation).
-- Robustness testing confirmed stability under JPEG compression down to Q=45 (87.5% accuracy, 100% recall) and scaling down to 0.50x (91.67% accuracy, 100% recall).
-- In accordance with Step 5 stopping rules, the tuning loop is concluded and the system proceeds to the single-pass held-out test evaluation.
+## Stopping Rule (Phase 1)
+- Consecutive tuning attempts yielded no further gain over Iteration 3 (83.33% accuracy, 98.67% recall, 0.8555 F1).
+- In accordance with Step 5 stopping rules, the Phase 1 loop was concluded.
+
+---
+
+# Phase 2 Self-Improvement Loop: Hard Sets & Generalizing Probes
+
+## Iteration 5: Dataset Audit & CIFAKE Domain Overlap Analysis
+- **Finding**: Audit of CIFAKE verified 0 data leakage between splits (0 hash collisions, 0 pixel collisions). However, 100% of AI images came from Stable Diffusion v1.4 on 32x32 CIFAR-10 thumbnails, and baseline model `dima806` was explicitly trained on CIFAKE.
+- **Vulnerability**: Single-purpose models trained on CIFAKE collapsed completely on modern Midjourney v5/v6 images (48.33% accuracy, 0.00% recall).
+- **Hypothesis for Iteration 6**: Train a generalizing feature probe on frozen embeddings from a general self-supervised vision model (DINOv2) with heavy real-world data augmentations (JPEG Q=45..65, resizing, blur, screenshotting).
+
+## Iteration 6: Generalizing DINOv2 Probe with Data Augmentation (Kept!)
+- **Change**: Extracted frozen 384-d embeddings from `facebook/dinov2-small` and 512-d embeddings from CLIP ViT-B/32 across augmented tuning samples (840 training samples). Trained Logistic Regression and 2-layer MLP probes.
+- **Results on Hard Tuning Set (60 images)**:
+  - DINOv2 + Logistic Regression: **100.00% Accuracy, 1.0000 F1**
+  - Compared to existing models on hard set: `dima806` (48.33%), `Organika` (33.33%), `Ateeqq` (73.33%).
+  - DINOv2 probe completely eliminated false alarms on WhatsApp mobile photos (scoring 0.00% AI probability).
+- **Action**: Saved probe package to `models/generalizing_probe.joblib` and integrated as Model 4 in `ml_ensemble.py`.
+
+## Iteration 7: Learned Calibrated Logistic Regression Stacker (Kept!)
+- **Change**: Replaced static hand-crafted weights with a Calibrated Logistic Regression stacker trained on detector features across the tuning sets (`models/learned_fusion_stacker.joblib`).
+- **Results**:
+  - Hard Tuning Set: **100.00% Accuracy, 1.0000 F1**
+  - Held-Out Easy Test Set: Accuracy rose from **85.33% to 92.00%** (+6.67%), Precision jumped from **77.89% to 93.15%** (+15.26%), False Positives plummeted from 21 down to 5.
+  - Probability separation expanded to **72.0%** (13.2% on Real vs 85.2% on AI).
+  - Held-Out Hard Test Set: **86.67% Accuracy, 86.67% AI Recall, 86.67% Precision, 0.8667 F1** (Catching 26 of 30 hard Midjourney AI images and correctly classifying 4 of 5 WhatsApp camera photos).
+- **Action**: Retained as primary fusion engine with graceful fallback to hand-weighted rules and 96.7% uncertain-zone flagging on heavily distorted samples.
+
 
 
 

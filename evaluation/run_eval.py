@@ -49,6 +49,7 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
                 "confidence": res.get("confidence"),
                 "summary": res.get("summary_reason"),
                 "signals": res.get("signals"),
+                "in_uncertain_zone": res.get("in_uncertain_zone", False),
                 "is_correct": (pred_label == ground_truth_label),
             })
         except Exception as exc:
@@ -62,6 +63,7 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
                 "confidence": "low",
                 "summary": f"Evaluation error: {exc}",
                 "signals": {},
+                "in_uncertain_zone": True,
                 "is_correct": False,
             })
     return results
@@ -71,7 +73,7 @@ def calculate_metrics(eval_records: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Computes binary classification metrics."""
     valid_records = [r for r in eval_records if r["ground_truth"] in (0, 1) and r["predicted_label"] in (0, 1)]
     if not valid_records:
-        return {"total": 0, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
+        return {"total": 0, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0, "uncertain_pct": 0.0}
 
     tp = sum(1 for r in valid_records if r["ground_truth"] == 1 and r["predicted_label"] == 1)
     tn = sum(1 for r in valid_records if r["ground_truth"] == 0 and r["predicted_label"] == 0)
@@ -91,6 +93,8 @@ def calculate_metrics(eval_records: List[Dict[str, Any]]) -> Dict[str, Any]:
     mean_ai_prob = float(sum(ai_probs) / len(ai_probs)) if ai_probs else 0.0
 
     errors = [r for r in valid_records if not r["is_correct"]]
+    uncertain_count = sum(1 for r in valid_records if r.get("in_uncertain_zone", False) or "Uncertain" in r.get("verdict", ""))
+    uncertain_pct = (uncertain_count / total * 100) if total > 0 else 0.0
 
     return {
         "total": total,
@@ -104,6 +108,8 @@ def calculate_metrics(eval_records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "f1": round(f1, 4),
         "mean_real_prob": round(mean_real_prob, 4),
         "mean_ai_prob": round(mean_ai_prob, 4),
+        "uncertain_count": uncertain_count,
+        "uncertain_pct": round(uncertain_pct, 2),
         "error_count": len(errors),
         "errors": errors,
     }
@@ -119,6 +125,12 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
     elif split == "test":
         real_dir = data_dir / "test" / "real"
         ai_dir = data_dir / "test" / "ai"
+    elif split == "hard_tuning":
+        real_dir = data_dir / "hard_tuning" / "real"
+        ai_dir = data_dir / "hard_tuning" / "ai"
+    elif split == "hard_test":
+        real_dir = data_dir / "hard_test" / "real"
+        ai_dir = data_dir / "hard_test" / "ai"
     elif split == "user":
         real_dir = data_dir / "my_images" / "real"
         ai_dir = data_dir / "my_images" / "ai"
@@ -149,6 +161,7 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
     print(f"Confusion Matrix: TP={metrics['tp']}, TN={metrics['tn']}, FP={metrics['fp']}, FN={metrics['fn']}")
     print(f"Mean AI Prob on Real Images: {metrics['mean_real_prob'] * 100:.1f}%")
     print(f"Mean AI Prob on AI Images:   {metrics['mean_ai_prob'] * 100:.1f}%")
+    print(f"Uncertain Zone Landings:     {metrics['uncertain_count']}/{metrics['total']} ({metrics['uncertain_pct']:.1f}%)")
 
     if metrics["errors"]:
         print(f"\n--- ERROR BREAKDOWN ({len(metrics['errors'])} misclassifications) ---")
@@ -167,7 +180,7 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", choices=["tuning", "test", "user", "messy"], default="tuning")
+    parser.add_argument("--split", choices=["tuning", "test", "hard_tuning", "hard_test", "user", "messy"], default="tuning")
     parser.add_argument("--threshold", type=float, default=0.50)
     args = parser.parse_args()
 

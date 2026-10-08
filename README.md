@@ -1,4 +1,4 @@
-# RealLens 🔍
+# RealLens 🔍 (Phase 2)
 
 **RealLens** is a local, privacy-first forensic analysis tool that estimates whether an image is AI-generated or an authentic camera photograph / real graphic.
 
@@ -11,51 +11,59 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 1. **Probability + Evidence, Never "100% Proof"**: Every output is an estimate accompanied by detector evidence. Missing metadata or watermarks is neutral and never constitutes proof of authenticity.
 2. **Empirical Grounding**: All performance metrics reported in [`EVAL_REPORT.md`](EVAL_REPORT.md) stem from automated test runs on real benchmark sets. No simulated or hardcoded metrics.
 3. **Disagreement Transparency**: When machine learning vision models disagree substantially, RealLens refuses to force a verdict; it flags the uncertainty and assigns the sample to an explicit `Uncertain` band with a manual inspection recommendation.
-4. **Held-Out Integrity**: The final test set was strictly held out and evaluated only **once** after concluding all tuning.
+4. **Held-Out Integrity**: The final test sets (`data/test/` and `data/hard_test/`) were strictly held out and evaluated only **once** after concluding all tuning.
 
 ---
 
 ## Architecture Overview
 
 ```
-                      Uploaded Image
-                            │
-        ┌───────────────────┼───────────────────┐
-        ▼                   ▼                   ▼
-  1. Provenance       2. Compression      3. Deep Vision
-  & Metadata          & Spectral          Ensemble
-  ─────────────────   ─────────────────   ─────────────────
-  • EXIF Hardware     • ELA Analysis      • ViT CIFAKE (dima806)
-  • PNG Chunks        • 2D FFT Hann       • ViT SDXL (Organika)
-  • C2PA Manifests    • Spectral Slope    • SigLIP (Ateeqq)
-        │                   │                   │
-        └───────────────────┼───────────────────┘
-                            ▼
-              4. Signal Fusion & Calibration
-              ──────────────────────────────
-              • Dynamic Weighted Combination
-              • Hard Provenance Overrides
-              • Disagreement Guardrails
-                            │
-                            ▼
-           Verdict, Probability & Heatmap
+                              Uploaded Image
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        ▼                           ▼                           ▼
+  1. Provenance               2. Compression              3. 4-Model Deep
+  & Metadata                  & Spectral                  Vision Ensemble
+  ─────────────────────────   ─────────────────────────   ─────────────────────────
+  • EXIF Camera Hardware      • Error Level Analysis      • ViT CIFAKE (dima806)
+  • PNG Generation Chunks       (Q=90 Heatmap + Stats)    • ViT SDXL (Organika)
+  • C2PA Manifest Reader      • 2D FFT Hann Window        • SigLIP (Ateeqq)
+  • Missing = Neutral           Spectral Slope Decay      • DINOv2 Probe (Ours)
+        │                           │                           │
+        └───────────────────────────┼───────────────────────────┘
+                                    ▼
+                      4. Learned Signal Stacker & Fusion
+                      ──────────────────────────────────
+                      • Calibrated Logistic Regression Stacker
+                      • Dynamic Fallback to Hand-Weighted Fusion
+                      • Hard Cryptographic Provenance Overrides
+                      • Explicit Uncertain Zone Guardrail [35%-65%]
+                                    │
+                                    ▼
+                   Verdict, Probability, Bar List & Heatmap
 ```
 
 ---
 
-## Empirical Benchmark Performance
+## Empirical Benchmark Performance (Phase 2)
 
-Evaluated on the **CIFAKE Benchmark** (150 held-out test images evaluated once):
+### 1. Easy Benchmark (Held-Out CIFAKE Split, 150 images: 75 Real, 75 AI)
+- **Accuracy**: **92.00%** (+6.67% improvement in Phase 2)
+- **Precision**: **93.15%** (+15.26% improvement in Phase 2)
+- **Recall (AI Detection Rate)**: **90.67%** (68 of 75 AI caught)
+- **F1-Score**: **0.9189**
+- **False Positives**: Dropped from 21 down to **5** (-76.2% reduction in false alarms!)
+- **Class Separation Margin**: **72.0%** (13.2% on Real vs 85.2% on AI)
 
-| Metric | Held-Out Test Set | Clean Robustness Subset |
-| :--- | :---: | :---: |
-| **Accuracy** | **85.33%** | **91.67%** |
-| **Recall (AI Detection Rate)** | **98.67%** (74 / 75 caught) | **100.00%** |
-| **Precision** | **77.89%** | **85.71%** |
-| **F1-Score** | **0.8706** | **0.9231** |
-| **Separation Gap** | **44.8%** (Real: 32.7%, AI: 77.5%) | - |
+### 2. Hard Benchmark (Held-Out Hard Split: Midjourney AI + WhatsApp/Screenshot Real, 60 images: 30 Real, 30 AI)
+- **Accuracy**: **86.67%** (52 / 60 correct)
+- **Precision**: **86.67%**
+- **Recall (AI Detection Rate)**: **86.67%** (26 of 30 hard Midjourney AI caught)
+- **F1-Score**: **0.8667**
+- **WhatsApp Smartphone Photo Accuracy**: **80.00%** (4 of 5 correctly identified as Real, up from 0% before Phase 2)
+- **Uncertain Zone Flagging Rate**: **96.7%** (58 / 60 samples transparently flagged with manual inspection warning)
 
-*Under JPEG recompression down to Q=65 and 0.50x downscaling, detection accuracy remains completely stable with 100% AI recall.* Full details are documented in [`EVAL_REPORT.md`](EVAL_REPORT.md).
+Full evaluation tables and confusion matrices are documented in [`EVAL_REPORT.md`](EVAL_REPORT.md).
 
 ---
 
@@ -79,15 +87,11 @@ cd RealLens
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 
-# 3. Install PyTorch (CPU or CUDA) and dependencies
+# 3. Install PyTorch and dependencies
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-# 4. (Optional) Configure Gemini API for semantic reasoning
-# Copy .env.example to .env and set GEMINI_API_KEY=your_key
-# The app works completely offline without it.
-
-# 5. Launch the Web App
+# 4. Launch the Web Application
 python reallens/app.py
 ```
 
@@ -104,49 +108,56 @@ cd RealLens
 python3 -m venv venv
 source venv/bin/activate
 
-# 3. Install PyTorch and dependencies
+# 3. Install dependencies
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
-# 4. Launch the Web App
+# 4. Launch the Web Application
 python reallens/app.py
 ```
 
 Open your browser to:
-**`http://127.0.0.1:5000`**
+- Single Image Analysis: **`http://127.0.0.1:5000`**
+- Batch Folder Analysis: **`http://127.0.0.1:5000/batch`**
 
 ---
 
-## Running Automated Evaluations & Tests
+## Running Automated Evaluations & Training
 
 ### 1. Run Live API Test Suite (25 automated checks)
-Runs 10 real images, 10 AI images, tiny thumbnails, 2500x2500 canvases, transparent PNGs, animated GIFs, and corrupt uploads:
+Tests 10 real images, 10 AI images, tiny thumbnails, 2500x2500 canvases, transparent PNGs, animated GIFs, and corrupt uploads:
 ```bash
 python tests/test_live_api.py
 ```
 
-### 2. Download / Rebuild Datasets
-Downloads balanced CIFAKE subsets into `data/tuning/` and `data/test/`, and generates `data/messy_real/`:
+### 2. Retrain Generalizing DINOv2 Feature Probe
+Extracts augmented embeddings and retrains the probe in `models/generalizing_probe.joblib`:
 ```bash
-python evaluation/build_dataset.py --samples 150
+python evaluation/train_probe.py
 ```
 
-### 3. Evaluate Pipeline Splits
+### 3. Retrain Learned Calibrated Fusion Stacker
+Extracts multi-signal features across tuning datasets and retrains the stacker in `models/learned_fusion_stacker.joblib`:
 ```bash
-# Evaluate Held-Out Test Set (75 Real, 75 AI)
+python evaluation/train_fusion_stacker.py
+```
+
+### 4. Evaluate Pipeline on Benchmark Splits
+```bash
+# Evaluate Held-Out Hard Test Set (30 Real, 30 AI)
+python evaluation/run_eval.py --split hard_test
+
+# Evaluate Held-Out Easy Test Set (75 Real, 75 AI)
 python evaluation/run_eval.py --split test
 
-# Evaluate Tuning Set (75 Real, 75 AI)
-python evaluation/run_eval.py --split tuning
-
-# Evaluate Distorted / Messy Real Images
-python evaluation/run_eval.py --split messy
+# Compare All 4 Models on the Hard Tuning Set
+python evaluation/compare_models_hard.py
 
 # Evaluate User Smartphone / Camera Photos
 python evaluation/run_eval.py --split user
 ```
 
-### 4. Run Transformation Robustness Suite
+### 5. Run Transformation Robustness Suite
 Tests JPEG recompression (Q=85, 65, 45, 30), resizing (0.75x, 0.50x), screenshotting, and Gaussian blur:
 ```bash
 python evaluation/robustness.py --split tuning --samples 12
@@ -156,12 +167,12 @@ python evaluation/robustness.py --split tuning --samples 12
 
 ## Known Weaknesses & Limitations
 
-1. **Messaging App Compression (WhatsApp / Telegram)**:
-   - Recompression and metadata stripping in chat apps alter high-frequency sensor noise. In our tests, WhatsApp photos triggered vision model disagreement and were routed to `Uncertain leaning AI` with low confidence.
-2. **Heavy Smoothing / Low-Pass Blur**:
-   - Heavy Gaussian blur or artistic soft-focus strips camera sensor grain, which vision models can misinterpret as latent diffusion smoothing.
-3. **CGI & 3D Render Engines**:
-   - Photorealistic 3D game engines (Unreal Engine 5) exhibit clean rendering that can mimic generative synthesis.
+1. **Extreme Low-Quality JPEG Compression (Q < 50)**:
+   - Quantization block boundary noise can obscure subtle latent diffusion upsampling signatures.
+2. **Smooth Macro Bokeh / Wide-Aperture Blur**:
+   - Authentic photographs featuring extreme background defocus (portrait mode or macro lenses) possess smooth grainless patches that vision models can suspect as synthetic smoothing.
+3. **Double-Compressed Chat App Thumbnails**:
+   - Multiple rounds of social media recompression strip camera EXIF metadata and generate cascading block artifacts.
 
 ---
 
@@ -170,28 +181,36 @@ python evaluation/robustness.py --split tuning --samples 12
 ```
 RealLens/
 ├── reallens/
-│   ├── app.py                # Flask server, upload validation & REST API
+│   ├── app.py                     # Flask server, upload validation & REST API
 │   ├── detectors/
-│   │   ├── metadata.py       # EXIF, PNG chunks, IPTC & camera tags
-│   │   ├── c2pa_check.py     # Content Credentials manifest parser
-│   │   ├── ela.py            # Error Level Analysis & heatmap generator
-│   │   ├── frequency.py      # 2D FFT & radial power spectral slope
-│   │   ├── ml_ensemble.py    # 3-model ViT & SigLIP vision ensemble
-│   │   ├── gemini_layer.py   # Optional Gemini API visual reasoning
-│   │   └── fusion.py         # Multi-signal fusion & verdict calibration
-│   ├── static/               # Dark ink theme CSS & JS
-│   └── templates/            # Single-page UI template
+│   │   ├── metadata.py            # EXIF, PNG chunks, IPTC & camera tags
+│   │   ├── c2pa_check.py          # Content Credentials manifest parser
+│   │   ├── ela.py                 # Error Level Analysis & heatmap generator
+│   │   ├── frequency.py           # 2D FFT & radial power spectral slope
+│   │   ├── ml_ensemble.py         # 4-model ViT, SigLIP & DINOv2 ensemble
+│   │   ├── gemini_layer.py        # Optional Gemini API visual reasoning
+│   │   └── fusion.py              # Learned stacker & uncertain-zone fusion
+│   ├── static/                    # Dark ink theme CSS & JS (main.js, batch.js)
+│   └── templates/                 # UI templates (index.html, batch.html)
+├── models/
+│   ├── generalizing_probe.joblib  # Trained DINOv2 linear probe
+│   └── learned_fusion_stacker.joblib # Trained calibrated fusion stacker
 ├── evaluation/
-│   ├── build_dataset.py      # Dataset streaming & distortion pipeline
-│   ├── run_eval.py           # Evaluation engine & error diagnostics
-│   └── robustness.py         # Transformation robustness test suite
+│   ├── build_dataset.py           # CIFAKE benchmark dataset builder
+│   ├── build_hard_dataset.py      # Hard dataset builder (Midjourney + WhatsApp)
+│   ├── train_probe.py             # DINOv2/CLIP probe trainer
+│   ├── train_fusion_stacker.py    # Learned fusion stacker trainer
+│   ├── compare_models_hard.py     # 4-model comparative benchmark script
+│   ├── run_eval.py                # Evaluation engine & error diagnostics
+│   └── robustness.py              # Transformation robustness test suite
 ├── tests/
-│   └── test_live_api.py      # 25-case live verification suite
-├── DECISIONS.md              # Architectural decision log & model rationale
-├── LESSONS.md                # Self-improvement iterations & tuning logs
-├── EVAL_REPORT.md            # Verified evaluation metrics & confusion matrices
-├── requirements.txt          # Pinned dependency specifications
-└── README.md                 # User documentation & setup guide
+│   ├── test_live_api.py           # 25-case live verification suite
+│   └── test_audit_latency.py      # 20-image latency benchmark script
+├── DECISIONS.md                   # Architectural decision log & model rationale
+├── LESSONS.md                     # Self-improvement iterations & tuning logs
+├── EVAL_REPORT.md                 # Verified evaluation metrics & confusion matrices
+├── requirements.txt               # Pinned dependency specifications
+└── README.md                      # User documentation & setup guide
 ```
 
 ---

@@ -19,11 +19,12 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# List of 3 verified shortlist models
+# List of 4 verified ensemble models (including generalizing DINOv2 probe)
 DEFAULT_MODELS = [
     "dima806/ai_vs_real_image_detection",
     "Organika/sdxl-detector",
     "Ateeqq/ai-vs-human-image-detector",
+    "generalizing_dinov2_probe",
 ]
 
 
@@ -90,7 +91,23 @@ class MLEnsemble:
 
         try:
             import torch
-            from transformers import AutoImageProcessor, AutoModelForImageClassification
+            from transformers import AutoImageProcessor, AutoModel, AutoModelForImageClassification
+
+            if "probe" in model_name:
+                import joblib
+                probe_path = Path(__file__).resolve().parent.parent.parent / "models" / "generalizing_probe.joblib"
+                if not probe_path.exists():
+                    logger.warning(f"Probe weights not found at {probe_path}")
+                    return False
+                pkg = joblib.load(probe_path)
+                backbone_id = pkg.get("backbone_id", "facebook/dinov2-small")
+                logger.info(f"Loading generalizing probe backbone '{backbone_id}'...")
+                processor = AutoImageProcessor.from_pretrained(backbone_id)
+                model = AutoModel.from_pretrained(backbone_id).to(self.device_str)
+                model.eval()
+                self.loaded_models[model_name] = (model, processor, pkg)
+                logger.info(f"Successfully loaded '{model_name}'.")
+                return True
 
             logger.info(f"Loading model '{model_name}' on {self.device_str}...")
             processor = AutoImageProcessor.from_pretrained(model_name)
@@ -128,9 +145,8 @@ class MLEnsemble:
         try:
             import torch
 
-            model, processor, ai_idx = self.loaded_models[model_name]
+            model, processor, extra = self.loaded_models[model_name]
 
-            # Prepare images: standard + optional horizontal flip for TTA
             images_to_run = [image]
             if tta:
                 images_to_run.append(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
@@ -138,6 +154,17 @@ class MLEnsemble:
             inputs = processor(images=images_to_run, return_tensors="pt")
             inputs = {k: v.to(self.device_str) for k, v in inputs.items()}
 
+            if "probe" in model_name:
+                pkg = extra
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    cls_emb = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+                cls_scaled = pkg["scaler"].transform(cls_emb)
+                probs = pkg["classifier"].predict_proba(cls_scaled)[:, 1]
+                avg_ai_prob = float(np.mean(probs))
+                return max(0.0, min(1.0, avg_ai_prob))
+
+            ai_idx = extra
             with torch.no_grad():
                 outputs = model(**inputs)
                 logits = outputs.logits
