@@ -1,0 +1,16 @@
+# RealLens gitignore
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+data/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+huggingface/
+tmp/
+scratch/
