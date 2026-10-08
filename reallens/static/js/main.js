@@ -1,1027 +1,1413 @@
 /**
- * RealLens - Multi-Signal AI Provenance & Forensic Engine
- * Phase 2.5: Multi-Image Batch Queue, Image-Type Gating, Spread Inspection & Inconclusive Routing
+ * RealLens - Phase 3 Frontend Controller
+ * Complete client-side management for multi-image queue, batch forensics,
+ * fixed-column results table, summary filters, and detailed visual inspection.
  */
 
-// Application State
-const state = {
-  queue: [],              // Array of { id, file, name, size, hash, status, result, thumbUrl, error }
-  selectedIndex: -1,     // Index of currently inspected item
-  currentFilter: 'all',  // 'all' | 'Likely AI' | 'Leaning AI' | 'Inconclusive' | 'Leaning real' | 'Likely real' | 'Failed'
-  sortColumn: 'index',   // 'index' | 'filename' | 'type' | 'verdict' | 'probability' | 'spread' | 'time'
-  sortDirection: 'asc',
-  isProcessing: false,
-  abortController: null,
-  analysisCache: new Map(), // hash -> result
-  elaMode: 'single',        // 'single' (toggle) | 'dual' (side-by-side)
-  elaShowingOriginal: true,
-  timesElapsed: [],
-};
+(function () {
+  'use strict';
 
-const ALLOWED_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif'];
-const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
-const MAX_QUEUE_SIZE = 50;
+  // State Management
+  const state = {
+    queue: [],            // Array of { id, file, name, size, status, result, thumbUrl }
+    results: [],          // Completed analysis result objects
+    selectedId: null,     // Currently inspected item ID
+    analyzing: false,     // Batch execution state
+    cancelRequested: false,
+    activeFilter: 'all',  // 'all' | 'Likely AI' | 'Leaning AI' | 'Inconclusive' | 'Leaning Real' | 'Likely Real' | 'Failed'
+    sortColumn: null,
+    sortAsc: true,
+    viewMode: 'ela',      // 'orig' | 'ela' | 'dual'
+    avgDurationSec: 0.65,
+  };
 
-// DOM Elements
-const dropzone = document.getElementById('dropzone');
-const fileInput = document.getElementById('file-input');
-const queueActionsBar = document.getElementById('queue-actions-bar');
-const queueCountBadge = document.getElementById('queue-count-badge');
-const analyzeAllBtn = document.getElementById('analyze-all-btn');
-const cancelBtn = document.getElementById('cancel-btn');
-const clearAllBtn = document.getElementById('clear-all-btn');
-const progressContainer = document.getElementById('progress-container');
-const progressFill = document.getElementById('progress-fill');
-const progressText = document.getElementById('progress-text');
-const progressEta = document.getElementById('progress-eta');
-const summaryStrip = document.getElementById('summary-strip');
-const queueTbody = document.getElementById('queue-tbody');
-const exportBar = document.getElementById('export-bar');
-const downloadCsvBtn = document.getElementById('download-csv-btn');
-const downloadJsonBtn = document.getElementById('download-json-btn');
-const copyReportBtn = document.getElementById('copy-report-btn');
-const deviceStatus = document.getElementById('device-status');
+  // DOM Elements Cache
+  const el = {
+    dropzone: document.getElementById('dropzone'),
+    fileInput: document.getElementById('file-input'),
+    analyzeAllBtn: document.getElementById('analyze-all-btn'),
+    cancelBtn: document.getElementById('cancel-btn'),
+    clearAllBtn: document.getElementById('clear-all-btn'),
+    queueCountBadge: document.getElementById('queue-count-badge'),
+    queueSummaryLabel: document.getElementById('queue-summary-label'),
+    queueList: document.getElementById('queue-list'),
+    queueEmptyState: document.getElementById('queue-empty-state'),
+    progressWrapper: document.getElementById('progress-wrapper'),
+    progressStatusText: document.getElementById('progress-status-text'),
+    progressEtaText: document.getElementById('progress-eta-text'),
+    progressFill: document.getElementById('progress-fill'),
+    downloadCsvBtn: document.getElementById('download-csv-btn'),
+    downloadJsonBtn: document.getElementById('download-json-btn'),
+    summaryStrip: document.getElementById('summary-strip'),
+    resultsTbody: document.getElementById('results-tbody'),
+    filterIndicator: document.getElementById('filter-indicator'),
+    currentFilterName: document.getElementById('current-filter-name'),
+    clearFilterBtn: document.getElementById('clear-filter-btn'),
+    detailCard: document.getElementById('detail-card'),
+    detailEmptyState: document.getElementById('detail-empty-state'),
+    detailActiveContainer: document.getElementById('detail-active-container'),
+    detailFilename: document.getElementById('detail-filename'),
+    detailDimensions: document.getElementById('detail-dimensions'),
+    detailSize: document.getElementById('detail-size'),
+    detailImageType: document.getElementById('detail-image-type'),
+    detailDuration: document.getElementById('detail-duration'),
+    detailCached: document.getElementById('detail-cached'),
+    copyReportBtn: document.getElementById('copy-report-btn'),
+    deepCheckGeminiBtn: document.getElementById('deep-check-gemini-btn'),
+    unreliableNoticeBox: document.getElementById('unreliable-notice-box'),
+    unreliableNoticeText: document.getElementById('unreliable-notice-text'),
+    compressionNoticeBox: document.getElementById('compression-notice-box'),
+    compressionNoticeText: document.getElementById('compression-notice-text'),
+    bigVerdictBox: document.getElementById('big-verdict-box'),
+    verdictBadgeMain: document.getElementById('verdict-badge-main'),
+    confidenceBadgeMain: document.getElementById('confidence-badge-main'),
+    verdictScoreDisplay: document.getElementById('verdict-score-display'),
+    verdictSummaryLine: document.getElementById('verdict-summary-line'),
+    whyVerdictContent: document.getElementById('why-verdict-content'),
+    spreadValueBadge: document.getElementById('spread-value-badge'),
+    spreadRangeBar: document.getElementById('spread-range-bar'),
+    spreadLabelMinmax: document.getElementById('spread-label-minmax'),
+    modelBarsList: document.getElementById('model-bars-list'),
+    viewModeOrig: document.getElementById('view-mode-orig'),
+    viewModeEla: document.getElementById('view-mode-ela'),
+    viewModeDual: document.getElementById('view-mode-dual'),
+    zoomForensicBtn: document.getElementById('zoom-forensic-btn'),
+    elaFrameSingle: document.getElementById('ela-frame-single'),
+    elaFrameDual: document.getElementById('ela-frame-dual'),
+    elaImgSingle: document.getElementById('ela-img-single'),
+    elaCaptionSingle: document.getElementById('ela-caption-single'),
+    elaImgOriginal: document.getElementById('ela-img-original'),
+    elaImgHeatmap: document.getElementById('ela-img-heatmap'),
+    elaNoteText: document.getElementById('ela-note-text'),
+    badgeMetaStatus: document.getElementById('badge-meta-status'),
+    metaDetailsBody: document.getElementById('meta-details-body'),
+    badgeC2paStatus: document.getElementById('badge-c2pa-status'),
+    c2paDetailsBody: document.getElementById('c2pa-details-body'),
+    badgeElaStatus: document.getElementById('badge-ela-status'),
+    elaDetailsBody: document.getElementById('ela-details-body'),
+    badgeFftStatus: document.getElementById('badge-fft-status'),
+    fftDetailsBody: document.getElementById('fft-details-body'),
+    badgeMlStatus: document.getElementById('badge-ml-status'),
+    mlDetailsBody: document.getElementById('ml-details-body'),
+    badgeGeminiStatus: document.getElementById('badge-gemini-status'),
+    geminiDetailsBody: document.getElementById('gemini-details-body'),
+    geminiResultCard: document.getElementById('gemini-result-card'),
+    geminiCardBadge: document.getElementById('gemini-card-badge'),
+    geminiPromptBox: document.getElementById('gemini-prompt-box'),
+    geminiObservationsList: document.getElementById('gemini-observations-list'),
+    zoomModal: document.getElementById('zoom-modal'),
+    zoomModalImage: document.getElementById('zoom-modal-image'),
+    zoomModalTitle: document.getElementById('zoom-modal-title'),
+    deviceText: document.getElementById('device-text'),
+    cacheText: document.getElementById('cache-text'),
+  };
 
-// Detail Panel Elements
-const detailEmpty = document.getElementById('detail-empty');
-const detailSkeleton = document.getElementById('detail-skeleton');
-const detailContent = document.getElementById('detail-content');
-const detailFilename = document.getElementById('detail-filename');
-const detailDims = document.getElementById('detail-dims');
-const detailSize = document.getElementById('detail-size');
-const detailTypeBadge = document.getElementById('detail-type-badge');
-const detailTime = document.getElementById('detail-time');
-const unreliableNotice = document.getElementById('unreliable-type-notice');
-const unreliableNoticeText = document.getElementById('unreliable-notice-text');
-const verdictBadge = document.getElementById('verdict-badge');
-const verdictConfidenceBadge = document.getElementById('verdict-confidence-badge');
-const verdictDisplayScore = document.getElementById('verdict-display-score');
-const verdictOneLiner = document.getElementById('verdict-one-liner');
-const whyVerdictText = document.getElementById('why-verdict-text');
-const spreadIndicatorPill = document.getElementById('spread-indicator-pill');
-const spreadBarFill = document.getElementById('spread-bar-fill');
-const spreadRangeLabel = document.getElementById('spread-range-label');
-const modelBarsContainer = document.getElementById('model-bars-container');
-const elaActiveImg = document.getElementById('ela-active-img');
-const elaViewCaption = document.getElementById('ela-view-caption');
-const elaToggleBtn = document.getElementById('ela-toggle-btn');
-const zoomImgBtn = document.getElementById('zoom-img-btn');
-const elaSingleView = document.getElementById('ela-single-view');
-const elaSideBySide = document.getElementById('ela-side-by-side');
-const compOriginal = document.getElementById('comp-original');
-const compEla = document.getElementById('comp-ela');
-const elaInterpretationNote = document.getElementById('ela-interpretation-note');
-const zoomModal = document.getElementById('zoom-modal');
-const zoomModalImg = document.getElementById('zoom-modal-img');
-const zoomTitle = document.getElementById('zoom-title');
+  // ===========================================================================
+  // Initialization & System Health
+  // ===========================================================================
 
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-  initSystemHealth();
-  setupEventListeners();
-});
-
-// Fetch Backend System Health
-async function initSystemHealth() {
-  try {
-    const res = await fetch('/health');
-    if (res.ok) {
-      const data = await res.json();
-      const modelsCount = (data.models_configured || []).length;
-      deviceStatus.textContent = `Device: ${data.device.toUpperCase()} • ${modelsCount} Models`;
-    }
-  } catch (err) {
-    deviceStatus.textContent = 'Device: Local Offline';
-  }
-}
-
-// Event Listeners Setup
-function setupEventListeners() {
-  // Drag & drop on dropzone
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', (e) => handleFilesAdded(Array.from(e.target.files)));
-
-  ['dragenter', 'dragover'].forEach(name => {
-    dropzone.addEventListener(name, (e) => {
-      e.preventDefault();
-      dropzone.classList.add('dragover');
-    });
-  });
-
-  ['dragleave', 'drop'].forEach(name => {
-    dropzone.addEventListener(name, (e) => {
-      e.preventDefault();
-      dropzone.classList.remove('dragover');
-    });
-  });
-
-  dropzone.addEventListener('drop', (e) => {
-    if (e.dataTransfer && e.dataTransfer.files) {
-      handleFilesAdded(Array.from(e.dataTransfer.files));
-    }
-  });
-
-  // Paste from clipboard anywhere
-  document.addEventListener('paste', (e) => {
-    if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
-      handleFilesAdded(Array.from(e.clipboardData.files));
-    }
-  });
-
-  // Action Buttons
-  analyzeAllBtn.addEventListener('click', startBatchProcessing);
-  cancelBtn.addEventListener('click', cancelBatchProcessing);
-  clearAllBtn.addEventListener('click', clearQueue);
-
-  // Filter Pills
-  document.querySelectorAll('.summary-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
-      document.querySelectorAll('.summary-pill').forEach(p => p.classList.remove('active'));
-      pill.classList.add('active');
-      state.currentFilter = pill.getAttribute('data-filter');
-      renderTable();
-    });
-  });
-
-  // Table Sorting
-  document.querySelectorAll('th.sortable').forEach(th => {
-    th.addEventListener('click', () => {
-      const col = th.getAttribute('data-sort');
-      if (state.sortColumn === col) {
-        state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
-      } else {
-        state.sortColumn = col;
-        state.sortDirection = 'asc';
+  async function checkHealth() {
+    try {
+      const res = await fetch('/health');
+      if (res.ok) {
+        const data = await res.json();
+        if (el.deviceText) {
+          el.deviceText.textContent = `Device: ${data.device ? data.device.toUpperCase() : 'CPU'}`;
+        }
+        if (el.cacheText && typeof data.cache_entries === 'number') {
+          el.cacheText.textContent = `⚡ SHA-256 Cache (${data.cache_entries} cached)`;
+        }
       }
-      renderTable();
-    });
-  });
-
-  // Keyboard navigation: ArrowUp and ArrowDown
-  document.addEventListener('keydown', (e) => {
-    if (state.queue.length === 0) return;
-    if (['ArrowDown', 'ArrowUp'].includes(e.key)) {
-      // Don't hijack if user is typing in an input
-      if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-      e.preventDefault();
-      navigateQueue(e.key === 'ArrowDown' ? 1 : -1);
+    } catch (e) {
+      console.warn('Health check unreachable:', e);
     }
-  });
-
-  // ELA controls
-  elaToggleBtn.addEventListener('click', toggleElaView);
-  zoomImgBtn.addEventListener('click', openZoomModal);
-  if (elaActiveImg) elaActiveImg.addEventListener('click', openZoomModal);
-
-  // Export handlers
-  downloadCsvBtn.addEventListener('click', exportToCsv);
-  downloadJsonBtn.addEventListener('click', exportToJson);
-  copyReportBtn.addEventListener('click', copyReportToClipboard);
-}
-
-// Compute SHA-256 for duplicate detection
-async function computeFileHash(file) {
-  try {
-    const buffer = await file.slice(0, 65536).arrayBuffer(); // Hash first 64KB + length for speed
-    const hashBuf = await crypto.subtle.digest('SHA-256', buffer);
-    const hashArr = Array.from(new Uint8Array(hashBuf));
-    return hashArr.map(b => b.toString(16).padStart(2, '0')).join('') + `_${file.size}`;
-  } catch (e) {
-    return `${file.name}_${file.size}_${file.lastModified}`;
-  }
-}
-
-// Handle Files Added
-async function handleFilesAdded(files) {
-  if (!files || files.length === 0) return;
-
-  const validFiles = files.filter(f => {
-    const ext = '.' + f.name.split('.').pop().toLowerCase();
-    return ALLOWED_EXTS.includes(ext) && f.size <= MAX_FILE_SIZE;
-  });
-
-  if (validFiles.length === 0) {
-    alert('No supported image files found (allowed: JPEG, PNG, WEBP, GIF, BMP, max 25MB).');
-    return;
   }
 
-  const availableSlots = MAX_QUEUE_SIZE - state.queue.length;
-  if (availableSlots <= 0) {
-    alert(`Queue limit reached (maximum ${MAX_QUEUE_SIZE} images). Clear items to add more.`);
-    return;
+  // ===========================================================================
+  // Queue & Upload Handling
+  // ===========================================================================
+
+  function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  const toAdd = validFiles.slice(0, availableSlots);
+  function addFilesToQueue(fileList) {
+    const maxFiles = 50;
+    const maxBytes = 25 * 1024 * 1024; // 25 MB
+    const remainingSlots = maxFiles - state.queue.length;
 
-  for (const file of toAdd) {
-    const hash = await computeFileHash(file);
-    const thumbUrl = URL.createObjectURL(file);
-    const existing = state.queue.find(item => item.hash === hash);
+    if (remainingSlots <= 0) {
+      alert(`Queue limit reached (maximum ${maxFiles} images).`);
+      return;
+    }
 
-    if (!existing) {
-      state.queue.push({
-        id: 'img_' + Math.random().toString(36).substr(2, 9),
+    const files = Array.from(fileList).slice(0, remainingSlots);
+    let addedCount = 0;
+
+    files.forEach(file => {
+      if (!file.type.startsWith('image/') && !file.name.match(/\.(jpg|jpeg|png|webp|gif|bmp|tiff|tif)$/i)) {
+        return;
+      }
+      if (file.size > maxBytes) {
+        alert(`File "${file.name}" exceeds the 25MB limit and was skipped.`);
+        return;
+      }
+
+      const id = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      const thumbUrl = URL.createObjectURL(file);
+
+      const item = {
+        id,
         file,
         name: file.name,
         size: file.size,
-        hash,
-        status: 'queued',
+        status: 'queued', // 'queued' | 'analyzing' | 'done' | 'failed'
+        verdict: null,
         result: null,
         thumbUrl,
-        error: null,
+      };
+
+      state.queue.push(item);
+      addedCount++;
+    });
+
+    if (addedCount > 0) {
+      renderQueue();
+      updateQueueStats();
+    }
+  }
+
+  function updateQueueStats() {
+    const total = state.queue.length;
+    const queuedCount = state.queue.filter(i => i.status === 'queued').length;
+    const doneCount = state.queue.filter(i => i.status === 'done').length;
+
+    el.queueCountBadge.textContent = `${total} items in queue`;
+    el.queueSummaryLabel.textContent = total > 0 ? `${doneCount} analyzed, ${queuedCount} ready` : 'No images loaded';
+
+    el.analyzeAllBtn.disabled = queuedCount === 0 || state.analyzing;
+    el.clearAllBtn.disabled = total === 0 || state.analyzing;
+    el.downloadCsvBtn.disabled = doneCount === 0;
+    el.downloadJsonBtn.disabled = doneCount === 0;
+
+    if (total === 0) {
+      el.queueEmptyState.style.display = 'flex';
+    } else {
+      el.queueEmptyState.style.display = 'none';
+    }
+  }
+
+  function renderQueue() {
+    // Preserve empty state element
+    const items = state.queue;
+    el.queueList.innerHTML = '';
+    el.queueList.appendChild(el.queueEmptyState);
+
+    items.forEach(item => {
+      const row = document.createElement('div');
+      row.className = `queue-row ${item.id === state.selectedId ? 'active' : ''}`;
+      row.id = `qrow-${item.id}`;
+      row.onclick = () => selectItem(item.id);
+
+      const thumb = document.createElement('img');
+      thumb.className = 'queue-thumb';
+      thumb.src = item.thumbUrl;
+      thumb.alt = item.name;
+
+      const col = document.createElement('div');
+      col.className = 'queue-info-col';
+
+      const fname = document.createElement('div');
+      fname.className = 'queue-filename';
+      fname.textContent = item.name;
+      fname.title = item.name;
+
+      const submeta = document.createElement('div');
+      submeta.className = 'queue-submeta';
+
+      const dot = document.createElement('span');
+      dot.className = `queue-verdict-dot ${getVerdictDotClass(item.verdict)}`;
+      if (!item.verdict) dot.style.display = 'none';
+
+      const sizeSpan = document.createElement('span');
+      sizeSpan.textContent = formatBytes(item.size);
+
+      submeta.appendChild(dot);
+      submeta.appendChild(sizeSpan);
+
+      col.appendChild(fname);
+      col.appendChild(submeta);
+
+      const badge = document.createElement('span');
+      badge.className = `queue-status-badge ${item.status}`;
+      badge.textContent = item.status === 'analyzing' ? 'Analyzing...' :
+                          item.status === 'queued' ? 'Queued' :
+                          item.status === 'done' ? (item.verdict || 'Done') : 'Failed';
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'queue-remove-btn';
+      removeBtn.innerHTML = '✕';
+      removeBtn.title = 'Remove item';
+      removeBtn.onclick = (e) => {
+        e.stopPropagation();
+        removeItem(item.id);
+      };
+
+      row.appendChild(thumb);
+      row.appendChild(col);
+      row.appendChild(badge);
+      row.appendChild(removeBtn);
+
+      el.queueList.appendChild(row);
+    });
+  }
+
+  function removeItem(id) {
+    const idx = state.queue.findIndex(i => i.id === id);
+    if (idx !== -1) {
+      URL.revokeObjectURL(state.queue[idx].thumbUrl);
+      state.queue.splice(idx, 1);
+    }
+    const resIdx = state.results.findIndex(r => r._id === id);
+    if (resIdx !== -1) {
+      state.results.splice(resIdx, 1);
+    }
+    if (state.selectedId === id) {
+      state.selectedId = state.results.length > 0 ? state.results[0]._id : null;
+      renderDetailView();
+    }
+    renderQueue();
+    renderResultsTable();
+    updateSummaryStrip();
+    updateQueueStats();
+  }
+
+  function clearAll() {
+    if (state.analyzing) return;
+    state.queue.forEach(i => URL.revokeObjectURL(i.thumbUrl));
+    state.queue = [];
+    state.results = [];
+    state.selectedId = null;
+    state.activeFilter = 'all';
+
+    renderQueue();
+    renderResultsTable();
+    updateSummaryStrip();
+    renderDetailView();
+    updateQueueStats();
+
+    el.progressWrapper.style.display = 'none';
+  }
+
+  // ===========================================================================
+  // Batch Execution Controller
+  // ===========================================================================
+
+  async function analyzeAll() {
+    if (state.analyzing) return;
+    const toAnalyze = state.queue.filter(i => i.status === 'queued');
+    if (toAnalyze.length === 0) return;
+
+    state.analyzing = true;
+    state.cancelRequested = false;
+
+    el.analyzeAllBtn.style.display = 'none';
+    el.cancelBtn.style.display = 'inline-flex';
+    el.clearAllBtn.disabled = true;
+    el.progressWrapper.style.display = 'block';
+
+    const totalToRun = toAnalyze.length;
+    let completedCount = 0;
+    const startTime = performance.now();
+
+    for (let i = 0; i < toAnalyze.length; i++) {
+      if (state.cancelRequested) {
+        break;
+      }
+
+      const item = toAnalyze[i];
+      item.status = 'analyzing';
+      updateQueueRow(item.id);
+
+      // Progress calculation
+      const pct = Math.round((completedCount / totalToRun) * 100);
+      el.progressFill.style.width = `${pct}%`;
+      el.progressStatusText.textContent = `Analyzing ${completedCount + 1} of ${totalToRun}: ${item.name}`;
+
+      const elapsedSec = (performance.now() - startTime) / 1000;
+      if (completedCount > 0) {
+        const avgPerItem = elapsedSec / completedCount;
+        const remainingItems = totalToRun - completedCount;
+        const etaSec = Math.max(0, Math.round(avgPerItem * remainingItems));
+        el.progressEtaText.textContent = `Est. remaining: ~${etaSec}s`;
+      } else {
+        el.progressEtaText.textContent = `Est. remaining: calculating...`;
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('image', item.file, item.name);
+
+        const res = await fetch('/analyze', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!res.ok) {
+          throw new Error(`Server returned HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (data.status === 'success' && data.result) {
+          const r = data.result;
+          r._id = item.id;
+          r._thumbUrl = item.thumbUrl;
+          item.status = 'done';
+          item.verdict = r.verdict;
+          item.result = r;
+
+          state.results.push(r);
+
+          // If this is first result or current selection, activate detail view
+          if (!state.selectedId || state.selectedId === item.id) {
+            selectItem(item.id);
+          }
+        } else {
+          throw new Error(data.message || 'Analysis failed');
+        }
+      } catch (err) {
+        console.error(`Error analyzing ${item.name}:`, err);
+        item.status = 'failed';
+        item.verdict = 'Failed';
+        const errResult = {
+          _id: item.id,
+          _thumbUrl: item.thumbUrl,
+          filename: item.name,
+          status: 'error',
+          verdict: 'Failed',
+          ai_percentage: null,
+          probability_display: 'Error',
+          confidence: 'none',
+          image_type: 'unknown',
+          time_taken_seconds: 0,
+          summary_reason: err.message || 'Inference error',
+          why_this_verdict: 'Failed to process this file through the forensic pipeline.',
+        };
+        item.result = errResult;
+        state.results.push(errResult);
+      }
+
+      completedCount++;
+      updateQueueRow(item.id);
+      renderResultsTable();
+      updateSummaryStrip();
+      updateQueueStats();
+    }
+
+    // Finalize Batch Run
+    state.analyzing = false;
+    el.analyzeAllBtn.style.display = 'inline-flex';
+    el.cancelBtn.style.display = 'none';
+    el.clearAllBtn.disabled = false;
+    el.progressFill.style.width = '100%';
+    el.progressStatusText.textContent = state.cancelRequested ? 'Batch analysis cancelled.' : `Completed ${completedCount} of ${totalToRun} images.`;
+    el.progressEtaText.textContent = 'Done';
+
+    setTimeout(() => {
+      if (!state.analyzing) {
+        el.progressWrapper.style.display = 'none';
+      }
+    }, 3500);
+
+    updateQueueStats();
+  }
+
+  function updateQueueRow(id) {
+    const item = state.queue.find(i => i.id === id);
+    if (!item) return;
+    const row = document.getElementById(`qrow-${id}`);
+    if (!row) return;
+
+    const badge = row.querySelector('.queue-status-badge');
+    if (badge) {
+      badge.className = `queue-status-badge ${item.status}`;
+      badge.textContent = item.status === 'analyzing' ? 'Analyzing...' :
+                          item.status === 'queued' ? 'Queued' :
+                          item.status === 'done' ? (item.verdict || 'Done') : 'Failed';
+    }
+
+    const dot = row.querySelector('.queue-verdict-dot');
+    if (dot) {
+      dot.className = `queue-verdict-dot ${getVerdictDotClass(item.verdict)}`;
+      dot.style.display = item.verdict ? 'inline-block' : 'none';
+    }
+  }
+
+  // ===========================================================================
+  // Summary Strip & Filter Logic
+  // ===========================================================================
+
+  function normalizeVerdict(v) {
+    if (!v) return 'Failed';
+    const s = String(v).trim().toLowerCase();
+    if (s === 'likely ai') return 'Likely AI';
+    if (s === 'leaning ai') return 'Leaning AI';
+    if (s.includes('inconclusive')) return 'Inconclusive';
+    if (s === 'leaning real') return 'Leaning Real';
+    if (s === 'likely real') return 'Likely Real';
+    if (s === 'failed') return 'Failed';
+    return 'Inconclusive';
+  }
+
+  function updateSummaryStrip() {
+    const counts = {
+      all: state.results.length,
+      'Likely AI': 0,
+      'Leaning AI': 0,
+      'Inconclusive': 0,
+      'Leaning Real': 0,
+      'Likely Real': 0,
+      'Failed': 0,
+    };
+
+    state.results.forEach(r => {
+      const v = normalizeVerdict(r.verdict);
+      if (counts[v] !== undefined) {
+        counts[v]++;
+      } else {
+        counts['Inconclusive']++;
+      }
+    });
+
+    document.getElementById('count-all').textContent = counts.all;
+    document.getElementById('count-likely-ai').textContent = counts['Likely AI'];
+    document.getElementById('count-leaning-ai').textContent = counts['Leaning AI'];
+    document.getElementById('count-inconclusive').textContent = counts['Inconclusive'];
+    document.getElementById('count-leaning-real').textContent = counts['Leaning Real'];
+    document.getElementById('count-likely-real').textContent = counts['Likely Real'];
+    document.getElementById('count-failed').textContent = counts['Failed'];
+
+    // Update filter pills active status
+    const pills = el.summaryStrip.querySelectorAll('.summary-pill');
+    pills.forEach(p => {
+      const f = p.getAttribute('data-filter');
+      p.classList.toggle('active', f === state.activeFilter);
+    });
+
+    if (state.activeFilter !== 'all') {
+      el.filterIndicator.style.display = 'flex';
+      el.currentFilterName.textContent = state.activeFilter;
+    } else {
+      el.filterIndicator.style.display = 'none';
+    }
+  }
+
+  function setFilter(filterName) {
+    state.activeFilter = filterName;
+    updateSummaryStrip();
+    renderResultsTable();
+  }
+
+  // ===========================================================================
+  // Results Table (Fixed Widths, Sort, Selection, Arrow Navigation)
+  // ===========================================================================
+
+  function getFilteredResults() {
+    if (state.activeFilter === 'all') {
+      return [...state.results];
+    }
+    return state.results.filter(r => normalizeVerdict(r.verdict) === state.activeFilter);
+  }
+
+  function renderResultsTable() {
+    let items = getFilteredResults();
+
+    // Sort if column set
+    if (state.sortColumn) {
+      items.sort((a, b) => {
+        let va = a[state.sortColumn];
+        let vb = b[state.sortColumn];
+
+        if (state.sortColumn === 'probability') {
+          va = a.ai_probability !== undefined && a.ai_probability !== null ? a.ai_probability : 0.5;
+          vb = b.ai_probability !== undefined && b.ai_probability !== null ? b.ai_probability : 0.5;
+        } else if (state.sortColumn === 'time') {
+          va = a.time_taken_seconds || 0;
+          vb = b.time_taken_seconds || 0;
+        }
+
+        if (va < vb) return state.sortAsc ? -1 : 1;
+        if (va > vb) return state.sortAsc ? 1 : -1;
+        return 0;
       });
     }
-  }
 
-  updateQueueVisibility();
-  updateSummaryCounts();
-  renderTable();
+    el.resultsTbody.innerHTML = '';
 
-  // If nothing is selected, select first queued image
-  if (state.selectedIndex === -1 && state.queue.length > 0) {
-    selectImageByIndex(0);
-  }
-}
-
-// Update UI Visibility
-function updateQueueVisibility() {
-  const hasItems = state.queue.length > 0;
-  queueActionsBar.style.display = hasItems ? 'flex' : 'none';
-  summaryStrip.style.display = hasItems ? 'flex' : 'none';
-  exportBar.style.display = hasItems ? 'flex' : 'none';
-  queueCountBadge.textContent = `${state.queue.length} image${state.queue.length === 1 ? '' : 's'}`;
-}
-
-// Update Summary Counts
-function updateSummaryCounts() {
-  const counts = {
-    all: state.queue.length,
-    'Likely AI': 0,
-    'Leaning AI': 0,
-    'Inconclusive': 0,
-    'Leaning real': 0,
-    'Likely real': 0,
-    'Failed': 0,
-  };
-
-  state.queue.forEach(item => {
-    if (item.status === 'failed') {
-      counts['Failed']++;
-    } else if (item.result && item.result.verdict) {
-      if (counts[item.result.verdict] !== undefined) {
-        counts[item.result.verdict]++;
-      }
+    if (items.length === 0) {
+      const emptyRow = document.createElement('tr');
+      emptyRow.className = 'empty-table-row';
+      const msg = state.results.length === 0
+        ? 'No images analyzed yet. Add images on the left and click "Analyze All".'
+        : `No results matching filter "${state.activeFilter}".`;
+      emptyRow.innerHTML = `<td colspan="7">${msg}</td>`;
+      el.resultsTbody.appendChild(emptyRow);
+      return;
     }
-  });
 
-  document.getElementById('count-all').textContent = counts.all;
-  document.getElementById('count-likely-ai').textContent = counts['Likely AI'];
-  document.getElementById('count-leaning-ai').textContent = counts['Leaning AI'];
-  document.getElementById('count-inconclusive').textContent = counts['Inconclusive'];
-  document.getElementById('count-leaning-real').textContent = counts['Leaning real'];
-  document.getElementById('count-likely-real').textContent = counts['Likely real'];
-  document.getElementById('count-failed').textContent = counts['Failed'];
-}
+    items.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.id = `row-${r._id}`;
+      if (r._id === state.selectedId) {
+        tr.classList.add('selected');
+      }
 
-// Render Table
-function renderTable() {
-  queueTbody.innerHTML = '';
+      tr.onclick = () => selectItem(r._id);
 
-  let filtered = state.queue.map((item, originalIndex) => ({ ...item, originalIndex }));
+      // 1. Thumb
+      const tdThumb = document.createElement('td');
+      const img = document.createElement('img');
+      img.className = 'table-thumb';
+      img.src = r._thumbUrl || '';
+      img.alt = r.filename || '';
+      tdThumb.appendChild(img);
 
-  if (state.currentFilter !== 'all') {
-    if (state.currentFilter === 'Failed') {
-      filtered = filtered.filter(item => item.status === 'failed');
+      // 2. Filename (truncated + tooltip)
+      const tdName = document.createElement('td');
+      tdName.className = 'td-filename';
+      tdName.textContent = r.filename || 'unknown.jpg';
+      tdName.title = r.filename || '';
+
+      // 3. Image Type
+      const tdType = document.createElement('td');
+      tdType.textContent = r.image_type || 'photo-like';
+
+      // 4. Verdict Badge
+      const tdVerdict = document.createElement('td');
+      const badge = document.createElement('span');
+      const normV = normalizeVerdict(r.verdict);
+      badge.className = `verdict-badge ${getVerdictBadgeClass(normV)}`;
+      badge.textContent = normV;
+      tdVerdict.appendChild(badge);
+
+      // 5. Probability / Range
+      const tdProb = document.createElement('td');
+      tdProb.textContent = r.probability_display || (r.ai_percentage !== null && r.ai_percentage !== undefined ? `${r.ai_percentage}%` : 'N/A');
+
+      // 6. Confidence
+      const tdConf = document.createElement('td');
+      const confSpan = document.createElement('span');
+      confSpan.className = 'conf-pill';
+      confSpan.textContent = r.confidence || 'medium';
+      tdConf.appendChild(confSpan);
+
+      // 7. Time
+      const tdTime = document.createElement('td');
+      tdTime.style.fontFamily = 'var(--font-mono)';
+      if (r.cached) {
+        tdTime.textContent = '<2ms ⚡';
+      } else {
+        tdTime.textContent = r.time_taken_seconds !== undefined ? `${r.time_taken_seconds}s` : '--';
+      }
+
+      tr.appendChild(tdThumb);
+      tr.appendChild(tdName);
+      tr.appendChild(tdType);
+      tr.appendChild(tdVerdict);
+      tr.appendChild(tdProb);
+      tr.appendChild(tdConf);
+      tr.appendChild(tdTime);
+
+      el.resultsTbody.appendChild(tr);
+    });
+  }
+
+  function handleSort(col) {
+    if (state.sortColumn === col) {
+      state.sortAsc = !state.sortAsc;
     } else {
-      filtered = filtered.filter(item => item.result && item.result.verdict === state.currentFilter);
-    }
-  }
-
-  // Sort
-  filtered.sort((a, b) => {
-    let valA = getSortValue(a, state.sortColumn);
-    let valB = getSortValue(b, state.sortColumn);
-
-    if (valA < valB) return state.sortDirection === 'asc' ? -1 : 1;
-    if (valA > valB) return state.sortDirection === 'asc' ? 1 : -1;
-    return 0;
-  });
-
-  if (filtered.length === 0) {
-    const tr = document.createElement('tr');
-    tr.className = 'empty-row';
-    tr.innerHTML = `<td colspan="8">No images match the active filter '${state.currentFilter}'.</td>`;
-    queueTbody.appendChild(tr);
-    return;
-  }
-
-  filtered.forEach(item => {
-    const tr = document.createElement('tr');
-    if (item.originalIndex === state.selectedIndex) {
-      tr.classList.add('selected-row');
+      state.sortColumn = col;
+      state.sortAsc = true;
     }
 
-    const verdictBadgeHtml = getVerdictBadgeHtml(item);
-    const scoreDisplay = getScoreDisplay(item);
-    const spreadDisplay = item.result && item.result.spread !== undefined ? `${(item.result.spread * 100).toFixed(0)}%` : '—';
-    const timeDisplay = item.result && item.result.time_taken_seconds !== undefined ? `${item.result.time_taken_seconds.toFixed(2)}s` : '—';
-    const typeDisplay = item.result && item.result.image_type ? item.result.image_type : 'detecting...';
-
-    tr.innerHTML = `
-      <td><img src="${item.thumbUrl}" class="table-thumb" alt="Thumb"></td>
-      <td class="table-filename" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</td>
-      <td><span class="table-type">${escapeHtml(typeDisplay)}</span></td>
-      <td>${verdictBadgeHtml}</td>
-      <td class="table-score">${scoreDisplay}</td>
-      <td class="table-spread">${spreadDisplay}</td>
-      <td class="table-time">${timeDisplay}</td>
-      <td>
-        <button class="btn-remove-row" title="Remove" onclick="removeQueueItem('${item.id}', event)">✕</button>
-      </td>
-    `;
-
-    tr.addEventListener('click', () => selectImageByIndex(item.originalIndex));
-    queueTbody.appendChild(tr);
-  });
-}
-
-function getSortValue(item, col) {
-  switch (col) {
-    case 'filename': return item.name.toLowerCase();
-    case 'type': return (item.result && item.result.image_type) || '';
-    case 'verdict': return (item.result && item.result.verdict) || item.status;
-    case 'probability': return (item.result && item.result.ai_probability) || -1;
-    case 'spread': return (item.result && item.result.spread) || -1;
-    case 'time': return (item.result && item.result.time_taken_seconds) || -1;
-    default: return item.originalIndex;
-  }
-}
-
-function getVerdictBadgeHtml(item) {
-  if (item.status === 'queued') return '<span class="status-badge badge-queued">Queued</span>';
-  if (item.status === 'analyzing') return '<span class="status-badge badge-analyzing">Analyzing...</span>';
-  if (item.status === 'failed') return '<span class="status-badge badge-failed">Failed</span>';
-
-  const v = item.result.verdict;
-  switch (v) {
-    case 'Likely AI': return '<span class="status-badge badge-likely-ai">Likely AI</span>';
-    case 'Leaning AI': return '<span class="status-badge badge-leaning-ai">Leaning AI</span>';
-    case 'Inconclusive': return '<span class="status-badge badge-inconclusive">Inconclusive</span>';
-    case 'Leaning real': return '<span class="status-badge badge-leaning-real">Leaning real</span>';
-    case 'Likely real': return '<span class="status-badge badge-likely-real">Likely real</span>';
-    default: return `<span class="status-badge badge-inconclusive">${escapeHtml(v)}</span>`;
-  }
-}
-
-function getScoreDisplay(item) {
-  if (item.status !== 'done' || !item.result) return '—';
-  if (item.result.probability_display) {
-    return escapeHtml(item.result.probability_display);
-  }
-  if (item.result.ai_percentage !== null && item.result.ai_percentage !== undefined) {
-    return `${item.result.ai_percentage.toFixed(1)}%`;
-  }
-  return '—';
-}
-
-// Select Image for Detail View
-function selectImageByIndex(index) {
-  if (index < 0 || index >= state.queue.length) return;
-  state.selectedIndex = index;
-  renderTable();
-
-  const item = state.queue[index];
-
-  if (item.status === 'queued') {
-    renderQueuedState(item);
-  } else if (item.status === 'analyzing') {
-    renderAnalyzingState(item);
-  } else if (item.status === 'failed') {
-    renderFailedState(item);
-  } else if (item.status === 'done' && item.result) {
-    renderDetailView(item);
-  }
-}
-
-function renderQueuedState(item) {
-  detailEmpty.style.display = 'none';
-  detailSkeleton.style.display = 'none';
-  detailContent.style.display = 'block';
-
-  detailFilename.textContent = item.name;
-  detailDims.textContent = 'Awaiting analysis';
-  detailSize.textContent = formatBytes(item.size);
-  detailTypeBadge.textContent = 'Queued';
-  detailTime.textContent = '—';
-  unreliableNotice.style.display = 'none';
-
-  verdictBadge.className = 'verdict-badge verdict-inconclusive';
-  verdictBadge.textContent = 'Queued';
-  verdictConfidenceBadge.textContent = 'Pending';
-  verdictConfidenceBadge.className = 'confidence-pill conf-low';
-  verdictDisplayScore.textContent = 'Ready to Analyze';
-  verdictOneLiner.textContent = "Click 'Analyze All' or inspect other images while queued.";
-  whyVerdictText.textContent = "Analysis has not run yet. When started, RealLens evaluates provenance, metadata, ELA, Fourier spectra, and deep vision models.";
-
-  spreadIndicatorPill.textContent = 'Spread: —';
-  spreadBarFill.style.width = '0%';
-  modelBarsContainer.innerHTML = '<div style="color: var(--muted); font-size: 12px;">Models will run upon analysis.</div>';
-  elaActiveImg.src = item.thumbUrl;
-  elaViewCaption.textContent = 'Input Preview';
-  elaInterpretationNote.textContent = 'Error Level Analysis will be computed upon running.';
-}
-
-function renderAnalyzingState(item) {
-  detailEmpty.style.display = 'none';
-  detailSkeleton.style.display = 'flex';
-  detailContent.style.display = 'none';
-}
-
-function renderFailedState(item) {
-  detailEmpty.style.display = 'none';
-  detailSkeleton.style.display = 'none';
-  detailContent.style.display = 'block';
-
-  detailFilename.textContent = item.name;
-  detailDims.textContent = 'Error';
-  detailSize.textContent = formatBytes(item.size);
-  detailTypeBadge.textContent = 'Failed';
-  detailTime.textContent = '—';
-  unreliableNotice.style.display = 'none';
-
-  verdictBadge.className = 'verdict-badge verdict-likely-ai';
-  verdictBadge.textContent = 'Failed';
-  verdictConfidenceBadge.textContent = 'Error';
-  verdictConfidenceBadge.className = 'confidence-pill conf-low';
-  verdictDisplayScore.textContent = 'Analysis Failed';
-  verdictOneLiner.textContent = item.error || 'Failed to analyze image file.';
-  whyVerdictText.textContent = `Error encountered: ${item.error || 'Server error'}. Please check file integrity.`;
-}
-
-// Render Complete Detail View (Phase 2.5 Architecture)
-function renderDetailView(item) {
-  const res = item.result;
-  detailEmpty.style.display = 'none';
-  detailSkeleton.style.display = 'none';
-  detailContent.style.display = 'block';
-
-  // 1. Header Metadata
-  detailFilename.textContent = res.filename || item.name;
-  detailDims.textContent = res.image_dimensions || '—';
-  detailSize.textContent = formatBytes(item.size);
-  detailTypeBadge.textContent = res.image_type || 'photo-like';
-  detailTime.textContent = `${res.time_taken_seconds || 0}s`;
-
-  // 2. Image Type Gating Notice
-  if (res.is_photo_like === false) {
-    unreliableNotice.style.display = 'flex';
-    unreliableNoticeText.textContent = res.unreliable_notice ||
-      "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type.";
-  } else {
-    unreliableNotice.style.display = 'none';
-  }
-
-  // 3. Verdict Card & Probability Display
-  const v = res.verdict || 'Inconclusive';
-  verdictBadge.textContent = v;
-  verdictBadge.className = 'verdict-badge ' + getVerdictClass(v);
-
-  const conf = res.confidence || 'low';
-  verdictConfidenceBadge.textContent = `${conf.toUpperCase()} CONFIDENCE`;
-  verdictConfidenceBadge.className = `confidence-pill conf-${conf.toLowerCase()}`;
-
-  // Big Probability or Range Display
-  if (res.probability_display) {
-    verdictDisplayScore.textContent = res.probability_display;
-  } else if (res.ai_percentage !== null && res.ai_percentage !== undefined) {
-    verdictDisplayScore.textContent = `${res.ai_percentage.toFixed(1)}%`;
-  } else {
-    verdictDisplayScore.textContent = '—';
-  }
-
-  verdictOneLiner.textContent = res.summary_reason || 'Multi-signal evaluation completed.';
-
-  // 4. "Why this verdict?" Explanation Box
-  whyVerdictText.textContent = res.why_this_verdict ||
-    "Decision derived from consensus analysis across metadata, C2PA, physical ELA noise, and deep vision models.";
-
-  // 5. Spread Indicator & Range Bar
-  const spread = res.spread !== undefined ? res.spread : 0.0;
-  spreadIndicatorPill.textContent = `Spread: ${(spread * 100).toFixed(1)}%`;
-
-  const minScore = res.min_model_score !== undefined ? res.min_model_score : 0.5;
-  const maxScore = res.max_model_score !== undefined ? res.max_model_score : 0.5;
-  const leftPct = Math.max(0, Math.min(100, minScore * 100));
-  const widthPct = Math.max(2, Math.min(100 - leftPct, (maxScore - minScore) * 100));
-
-  spreadBarFill.style.left = `${leftPct}%`;
-  spreadBarFill.style.width = `${widthPct}%`;
-  spreadRangeLabel.textContent = `Min: ${(minScore * 100).toFixed(0)}% — Max: ${(maxScore * 100).toFixed(0)}%`;
-
-  // 6. Individual Model Progress Bars
-  renderModelBars(res.signals?.ml_ensemble);
-
-  // 7. Forensic Visual Comparison (ELA)
-  renderVisualEla(res.signals?.ela, item.thumbUrl);
-
-  // 8. Collapsible Multi-Signal Accordion
-  renderAccordionSignals(res.signals);
-}
-
-function getVerdictClass(verdict) {
-  switch (verdict) {
-    case 'Likely AI': return 'verdict-likely-ai';
-    case 'Leaning AI': return 'verdict-leaning-ai';
-    case 'Inconclusive': return 'verdict-inconclusive';
-    case 'Leaning real': return 'verdict-leaning-real';
-    case 'Likely real': return 'verdict-likely-real';
-    default: return 'verdict-inconclusive';
-  }
-}
-
-// Render Individual Model Progress Bars
-function renderModelBars(mlSignal) {
-  modelBarsContainer.innerHTML = '';
-  if (!mlSignal || !mlSignal.per_model_scores) {
-    modelBarsContainer.innerHTML = '<div style="color: var(--muted); font-size: 12px;">No vision models reported.</div>';
-    return;
-  }
-
-  const scores = mlSignal.per_model_scores;
-  for (const [rawName, score] of Object.entries(scores)) {
-    const itemDiv = document.createElement('div');
-    itemDiv.className = 'model-bar-item';
-
-    const shortName = rawName.split('/').pop();
-    const pct = score !== null && score !== undefined ? (score * 100).toFixed(1) : 'N/A';
-    const numScore = score !== null && score !== undefined ? score : 0.5;
-
-    // Confidence tag for individual model
-    let confTag = 'LOW';
-    let confClass = 'conf-low';
-    if (numScore >= 0.85 || numScore <= 0.15) {
-      confTag = 'HIGH';
-      confClass = 'conf-high';
-    } else if (numScore >= 0.70 || numScore <= 0.30) {
-      confTag = 'MED';
-      confClass = 'conf-medium';
-    }
-
-    // Color gradient for the bar
-    let barColor = 'linear-gradient(90deg, #38BDF8, #6EA8FF)';
-    if (numScore >= 0.65) barColor = 'linear-gradient(90deg, #F59E0B, #EF4444)';
-    else if (numScore >= 0.45) barColor = 'linear-gradient(90deg, #A78BFA, #F59E0B)';
-
-    itemDiv.innerHTML = `
-      <div class="model-bar-header">
-        <span class="model-name" title="${escapeHtml(rawName)}">${escapeHtml(shortName)}</span>
-        <div class="model-score-tag">
-          <span class="confidence-pill ${confClass}">${confTag}</span>
-          <span>${pct}% AI</span>
-        </div>
-      </div>
-      <div class="model-progress-track">
-        <div class="model-progress-fill" style="width: ${numScore * 100}%; background: ${barColor};"></div>
-      </div>
-    `;
-    modelBarsContainer.appendChild(itemDiv);
-  }
-}
-
-// Render Visual ELA
-function renderVisualEla(elaSignal, fallbackThumbUrl) {
-  state.elaShowingOriginal = true;
-  if (!elaSignal || !elaSignal.heatmap_base64) {
-    elaActiveImg.src = fallbackThumbUrl;
-    elaViewCaption.textContent = 'Original Input (No ELA Heatmap)';
-    elaToggleBtn.style.display = 'none';
-    return;
-  }
-
-  elaToggleBtn.style.display = 'inline-flex';
-  const elaDataUri = `data:image/jpeg;base64,${elaSignal.heatmap_base64}`;
-
-  elaActiveImg.dataset.original = fallbackThumbUrl;
-  elaActiveImg.dataset.ela = elaDataUri;
-  elaActiveImg.src = fallbackThumbUrl;
-  elaViewCaption.textContent = 'Original Input (Click toggle to view ELA)';
-
-  compOriginal.src = fallbackThumbUrl;
-  compEla.src = elaDataUri;
-
-  elaInterpretationNote.textContent = elaSignal.summary ||
-    `ELA Mean Diff: ${elaSignal.mean_difference || 0}, Max: ${elaSignal.max_difference || 0}. Flat graphics or screenshots naturally display uniform difference patterns.`;
-}
-
-function toggleElaView() {
-  if (!elaActiveImg.dataset.ela) return;
-  state.elaShowingOriginal = !state.elaShowingOriginal;
-
-  if (state.elaShowingOriginal) {
-    elaActiveImg.src = elaActiveImg.dataset.original;
-    elaViewCaption.textContent = 'Original Input';
-  } else {
-    elaActiveImg.src = elaActiveImg.dataset.ela;
-    elaViewCaption.textContent = 'ELA Heatmap (Error Level Analysis)';
-  }
-}
-
-// Render Accordion Signals
-function renderAccordionSignals(signals) {
-  if (!signals) return;
-
-  // 1. C2PA
-  const c2pa = signals.c2pa;
-  const badgeC2pa = document.getElementById('badge-c2pa');
-  const c2paDetails = document.getElementById('c2pa-details');
-  if (c2pa && c2pa.manifest_present) {
-    badgeC2pa.textContent = 'Manifest Present';
-    badgeC2pa.style.color = 'var(--c-likely-real)';
-    c2paDetails.innerHTML = `<strong>Authenticated Manifest:</strong> ${escapeHtml(c2pa.summary || 'Valid C2PA metadata found.')}`;
-  } else {
-    badgeC2pa.textContent = 'No Manifest';
-    badgeC2pa.style.color = 'var(--muted)';
-    c2paDetails.textContent = 'No cryptographic C2PA / CAI Content Credentials manifest found attached to this file.';
-  }
-
-  // 2. Metadata
-  const meta = signals.metadata;
-  const badgeMeta = document.getElementById('badge-meta');
-  const metaDetails = document.getElementById('meta-details');
-  if (meta && meta.ai_software_detected) {
-    badgeMeta.textContent = 'AI Traces Found';
-    badgeMeta.style.color = 'var(--c-likely-ai)';
-    metaDetails.innerHTML = `<strong>Generator Artifacts:</strong> ${escapeHtml(meta.summary || 'AI metadata signature identified.')}`;
-  } else if (meta && meta.camera_make) {
-    badgeMeta.textContent = 'EXIF Camera Header';
-    badgeMeta.style.color = 'var(--c-likely-real)';
-    metaDetails.textContent = `Hardware EXIF tags: ${meta.camera_make} ${meta.camera_model || ''}. Note: EXIF is easily forged.`;
-  } else {
-    badgeMeta.textContent = 'Clean / Stripped';
-    badgeMeta.style.color = 'var(--muted)';
-    metaDetails.textContent = 'No generator prompts or hardware camera tags found in image chunks.';
-  }
-
-  // 3. ELA
-  const ela = signals.ela;
-  const badgeEla = document.getElementById('badge-ela');
-  const elaDetails = document.getElementById('ela-details');
-  if (ela) {
-    badgeEla.textContent = ela.score !== null ? `${(ela.score * 100).toFixed(0)}% Score` : 'N/A';
-    elaDetails.textContent = ela.summary || `Mean Diff: ${ela.mean_difference}, Max: ${ela.max_difference}.`;
-  }
-
-  // 4. FFT
-  const fft = signals.frequency;
-  const badgeFft = document.getElementById('badge-fft');
-  const fftDetails = document.getElementById('fft-details');
-  if (fft) {
-    badgeFft.textContent = fft.score !== null ? `${(fft.score * 100).toFixed(0)}% Score` : 'N/A';
-    fftDetails.textContent = fft.summary || `Upsampling artifact peak ratio: ${fft.periodic_peak_ratio || 0}. High frequency energy: ${fft.high_freq_energy || 0}.`;
-  }
-
-  // 5. ML Ensemble
-  const ml = signals.ml_ensemble;
-  const badgeMl = document.getElementById('badge-ml');
-  const mlDetails = document.getElementById('ml-details');
-  if (ml) {
-    badgeMl.textContent = ml.score !== null ? `${(ml.score * 100).toFixed(0)}% Median` : 'N/A';
-    mlDetails.innerHTML = `<strong>Ensemble Consensus:</strong> ${escapeHtml(ml.summary || 'Evaluated across models.')}`;
-  }
-
-  // 6. Gemini
-  const gemini = signals.gemini;
-  const badgeGemini = document.getElementById('badge-gemini');
-  const geminiDetails = document.getElementById('gemini-details');
-  if (gemini && gemini.score !== null) {
-    badgeGemini.textContent = `${(gemini.score * 100).toFixed(0)}% Score`;
-    geminiDetails.textContent = gemini.reasoning || (gemini.evidence || []).join('; ');
-  } else {
-    badgeGemini.textContent = 'Disabled';
-    geminiDetails.textContent = 'Gemini visual reasoning inactive. Add GEMINI_API_KEY in .env to enable optional LLM verification.';
-  }
-}
-
-// Toggle Accordion Row
-window.toggleAccordion = function(id) {
-  const el = document.getElementById(id);
-  if (el) {
-    el.classList.toggle('open');
-  }
-};
-
-// Sequential Batch Processing (CPU-Friendly)
-async function startBatchProcessing() {
-  if (state.isProcessing) return;
-
-  const queuedItems = state.queue.filter(item => item.status === 'queued' || item.status === 'failed');
-  if (queuedItems.length === 0) {
-    alert('No queued images to analyze.');
-    return;
-  }
-
-  state.isProcessing = true;
-  state.abortController = new AbortController();
-  state.timesElapsed = [];
-
-  analyzeAllBtn.style.display = 'none';
-  cancelBtn.style.display = 'inline-flex';
-  progressContainer.style.display = 'block';
-
-  const total = queuedItems.length;
-  let processed = 0;
-
-  for (const item of queuedItems) {
-    if (state.abortController.signal.aborted) break;
-
-    // Check SHA-256 cache
-    if (state.analysisCache.has(item.hash)) {
-      item.result = state.analysisCache.get(item.hash);
-      item.status = 'done';
-      processed++;
-      updateBatchProgress(processed, total);
-      updateSummaryCounts();
-      renderTable();
-      if (state.selectedIndex === state.queue.indexOf(item)) {
-        renderDetailView(item);
+    // Update sort arrows
+    document.querySelectorAll('th.sortable').forEach(th => {
+      const arrow = th.querySelector('.sort-arrow');
+      if (th.getAttribute('data-sort') === col) {
+        arrow.textContent = state.sortAsc ? '▲' : '▼';
+        arrow.style.opacity = '1';
+      } else {
+        arrow.textContent = '⇅';
+        arrow.style.opacity = '0.5';
       }
-      continue;
+    });
+
+    renderResultsTable();
+  }
+
+  // Keyboard navigation between rows (↑ and ↓)
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+
+    const items = getFilteredResults();
+    if (items.length === 0) return;
+
+    e.preventDefault();
+    const currentIdx = items.findIndex(r => r._id === state.selectedId);
+    let nextIdx = 0;
+
+    if (e.key === 'ArrowDown') {
+      nextIdx = currentIdx < items.length - 1 ? currentIdx + 1 : 0;
+    } else if (e.key === 'ArrowUp') {
+      nextIdx = currentIdx > 0 ? currentIdx - 1 : items.length - 1;
     }
 
-    item.status = 'analyzing';
-    renderTable();
-    if (state.selectedIndex === state.queue.indexOf(item)) {
-      renderAnalyzingState(item);
+    selectItem(items[nextIdx]._id);
+  });
+
+  // ===========================================================================
+  // Detail View Controller
+  // ===========================================================================
+
+  function selectItem(id) {
+    state.selectedId = id;
+
+    // Highlight row in table
+    document.querySelectorAll('.results-table tbody tr').forEach(tr => {
+      tr.classList.toggle('selected', tr.id === `row-${id}`);
+    });
+
+    // Highlight row in left queue
+    document.querySelectorAll('.queue-row').forEach(row => {
+      row.classList.toggle('active', row.id === `qrow-${id}`);
+    });
+
+    renderDetailView();
+  }
+
+  function renderDetailView() {
+    if (!state.selectedId) {
+      el.detailEmptyState.style.display = 'flex';
+      el.detailActiveContainer.style.display = 'none';
+      return;
     }
 
-    const t0 = performance.now();
+    const item = state.queue.find(i => i.id === state.selectedId);
+    const r = state.results.find(res => res._id === state.selectedId) || (item ? item.result : null);
+
+    if (!r) {
+      el.detailEmptyState.style.display = 'flex';
+      el.detailActiveContainer.style.display = 'none';
+      return;
+    }
+
+    el.detailEmptyState.style.display = 'none';
+    el.detailActiveContainer.style.display = 'flex';
+
+    // 1. File Metadata Header
+    el.detailFilename.textContent = r.filename || item?.name || 'image.jpg';
+    el.detailDimensions.textContent = r.image_dimensions || 'N/A';
+    el.detailSize.textContent = item ? formatBytes(item.size) : 'N/A';
+    el.detailImageType.textContent = r.image_type || 'photo-like';
+    el.detailDuration.textContent = r.cached ? '<2ms (cached)' : (r.time_taken_seconds !== undefined ? `${r.time_taken_seconds}s` : '--');
+    el.detailCached.style.display = r.cached ? 'inline-block' : 'none';
+
+    // 2. Unreliable Notice (for non-photos)
+    if (r.unreliable_notice || (r.is_photo_like === false)) {
+      el.unreliableNoticeBox.style.display = 'flex';
+      el.unreliableNoticeText.textContent = r.unreliable_notice || 'This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type.';
+    } else {
+      el.unreliableNoticeBox.style.display = 'none';
+    }
+
+    // 2b. Compression Notice
+    const compNotice = r.compression_notice || (r.image_type_res && r.image_type_res.compression_notice) || (r.signals && r.signals.image_type && r.signals.image_type.compression_notice);
+    if (r.is_heavily_recompressed || compNotice) {
+      el.compressionNoticeBox.style.display = 'flex';
+      el.compressionNoticeText.textContent = compNotice || 'Lossy recompression detected (e.g. WhatsApp or low JPEG quality). Compression artifacts obscure fine camera noise. Result calibrated to honest Inconclusive.';
+    } else {
+      el.compressionNoticeBox.style.display = 'none';
+    }
+
+    // 3. Big Verdict Banner
+    const normV = normalizeVerdict(r.verdict);
+    el.verdictBadgeMain.className = `verdict-badge ${getVerdictBadgeClass(normV)}`;
+    el.verdictBadgeMain.textContent = normV;
+
+    el.bigVerdictBox.className = `verdict-banner ${getVerdictBannerBorderClass(normV)}`;
+
+    el.confidenceBadgeMain.textContent = `${r.confidence || 'medium'} confidence`;
+    el.verdictScoreDisplay.textContent = r.probability_display || (r.ai_percentage !== null && r.ai_percentage !== undefined ? `${r.ai_percentage}%` : 'N/A');
+    el.verdictSummaryLine.textContent = r.summary_reason || 'Multi-signal analysis complete.';
+
+    // 4. "Why this verdict?" Box
+    el.whyVerdictContent.textContent = r.why_this_verdict || r.summary_reason || 'Multi-signal detector evaluation complete.';
+
+    // 5. Model Spread & Individual Progress Bars
+    const spreadVal = r.spread !== undefined ? (r.spread * 100).toFixed(1) : '0.0';
+    el.spreadValueBadge.textContent = `Spread: ${spreadVal}%`;
+
+    const minScore = r.min_model_score !== undefined ? (r.min_model_score * 100).toFixed(0) : '0';
+    const maxScore = r.max_model_score !== undefined ? (r.max_model_score * 100).toFixed(0) : '100';
+    el.spreadLabelMinmax.textContent = `Range: ${minScore}% – ${maxScore}%`;
+
+    const leftPct = Math.max(0, Math.min(100, parseFloat(minScore)));
+    const widthPct = Math.max(3, Math.min(100 - leftPct, parseFloat(maxScore) - leftPct));
+    el.spreadRangeBar.style.left = `${leftPct}%`;
+    el.spreadRangeBar.style.width = `${widthPct}%`;
+
+    renderModelBars(r);
+
+    // 6. Forensic Visuals (ELA Heatmap)
+    renderForensicViews(r);
+
+    // 7. Signal Accordion Rows
+    renderSignalAccordion(r);
+
+    // 8. Gemini Card Reset
+    el.geminiResultCard.style.display = 'none';
+  }
+
+  function renderModelBars(r) {
+    el.modelBarsList.innerHTML = '';
+    const modelsObj = (r.signals && r.signals.ml && r.signals.ml.models) || {};
+    const modelKeys = Object.keys(modelsObj);
+
+    if (modelKeys.length === 0) {
+      el.modelBarsList.innerHTML = '<div style="font-size: 0.74rem; color: var(--muted);">No individual model scores recorded.</div>';
+      return;
+    }
+
+    modelKeys.forEach(mKey => {
+      const mInfo = modelsObj[mKey];
+      const score = mInfo && typeof mInfo.score === 'number' ? mInfo.score : null;
+      const pct = score !== null ? (score * 100).toFixed(1) : null;
+      const shortName = mKey.split('/').pop();
+
+      const row = document.createElement('div');
+      row.className = 'model-bar-row';
+
+      const labelLine = document.createElement('div');
+      labelLine.className = 'model-bar-label-line';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'model-name-text';
+      nameSpan.textContent = shortName;
+
+      const valSpan = document.createElement('span');
+      valSpan.className = 'model-val-text';
+      valSpan.textContent = pct !== null ? `${pct}%` : 'Unavailable';
+
+      labelLine.appendChild(nameSpan);
+      labelLine.appendChild(valSpan);
+
+      const track = document.createElement('div');
+      track.className = 'model-track';
+
+      const fill = document.createElement('div');
+      fill.className = 'model-fill';
+      fill.style.width = pct !== null ? `${pct}%` : '0%';
+      if (pct !== null) {
+        fill.style.backgroundColor = parseFloat(pct) >= 60 ? 'var(--error)' :
+                                     parseFloat(pct) >= 40 ? 'var(--warn)' : 'var(--success)';
+      }
+
+      track.appendChild(fill);
+      row.appendChild(labelLine);
+      row.appendChild(track);
+
+      el.modelBarsList.appendChild(row);
+    });
+  }
+
+  function renderForensicViews(r) {
+    const thumb = r._thumbUrl || '';
+    const elaBase64 = (r.signals && r.signals.ela && r.signals.ela.heatmap_base64) || null;
+    const elaSrc = elaBase64 ? (elaBase64.startsWith('data:') ? elaBase64 : `data:image/jpeg;base64,${elaBase64}`) : thumb;
+
+    el.elaImgOriginal.src = thumb;
+    el.elaImgHeatmap.src = elaSrc;
+
+    updateViewMode(state.viewMode, thumb, elaSrc);
+
+    // ELA note
+    if (r.signals && r.signals.ela && r.signals.ela.interpretation) {
+      el.elaNoteText.textContent = r.signals.ela.interpretation;
+    } else {
+      el.elaNoteText.textContent = 'ELA highlights recompression error variance across 8x8 DCT grid macroblocks.';
+    }
+  }
+
+  function updateViewMode(mode, origSrc, elaSrc) {
+    state.viewMode = mode;
+    [el.viewModeOrig, el.viewModeEla, el.viewModeDual].forEach(b => b.classList.remove('active'));
+
+    const thumb = origSrc || el.elaImgOriginal.src;
+    const heatmap = elaSrc || el.elaImgHeatmap.src;
+
+    if (mode === 'orig') {
+      el.viewModeOrig.classList.add('active');
+      el.elaFrameSingle.style.display = 'flex';
+      el.elaFrameDual.style.display = 'none';
+      el.elaImgSingle.src = thumb;
+      el.elaCaptionSingle.textContent = 'Original Input';
+    } else if (mode === 'ela') {
+      el.viewModeEla.classList.add('active');
+      el.elaFrameSingle.style.display = 'flex';
+      el.elaFrameDual.style.display = 'none';
+      el.elaImgSingle.src = heatmap;
+      el.elaCaptionSingle.textContent = 'ELA Heatmap';
+    } else if (mode === 'dual') {
+      el.viewModeDual.classList.add('active');
+      el.elaFrameSingle.style.display = 'none';
+      el.elaFrameDual.style.display = 'grid';
+    }
+  }
+
+  function renderSignalAccordion(r) {
+    const sig = r.signals || {};
+
+    // 1. Metadata
+    const meta = sig.metadata || {};
+    const camMake = meta.camera_make || meta.make;
+    const camModel = meta.camera_model || meta.model;
+    const camStr = (camMake || camModel) ? `${camMake || ''} ${camModel || ''}`.trim() : 'None';
+    const soft = meta.software ? `Software: ${meta.software}. ` : '';
+    const aiTrace = meta.ai_tool_detected ? `🚨 AI generator tag found: ${meta.ai_tool_detected}. ` : '';
+
+    el.badgeMetaStatus.textContent = camStr !== 'None' ? 'Camera EXIF' : (meta.ai_tool_detected ? 'AI Traces' : 'None');
+    el.badgeMetaStatus.className = `acc-status-pill ${camStr !== 'None' ? 'found' : (meta.ai_tool_detected ? 'flagged' : 'neutral')}`;
+    el.metaDetailsBody.innerHTML = `<strong>Camera Hardware:</strong> ${camStr}<br>${soft}${aiTrace}${meta.evidence ? meta.evidence.join('<br>') : ''}`;
+
+    // 2. C2PA
+    const c2pa = sig.c2pa || {};
+    const c2paFound = c2pa.manifest_found;
+    el.badgeC2paStatus.textContent = c2paFound ? 'Manifest Found' : 'Absent';
+    el.badgeC2paStatus.className = `acc-status-pill ${c2paFound ? 'found' : 'neutral'}`;
+    el.c2paDetailsBody.innerHTML = c2paFound
+      ? `<strong>C2PA Manifest Verified:</strong> ${c2pa.claim_generator || 'Standard claim'}. Cryptographic chain intact.`
+      : `No C2PA Content Credentials manifest present in image header. (Standard for raw downloads and social media).`;
+
+    // 3. ELA
+    const ela = sig.ela || {};
+    const elaScore = ela.score !== undefined ? (ela.score * 100).toFixed(0) : 'N/A';
+    el.badgeElaStatus.textContent = `Score: ${elaScore}%`;
+    el.elaDetailsBody.innerHTML = `<strong>Error Level Variance:</strong> ${ela.interpretation || 'Evaluated recompression differences.'}`;
+
+    // 4. FFT
+    const fft = sig.frequency || {};
+    const fftScore = fft.score !== undefined ? (fft.score * 100).toFixed(0) : 'N/A';
+    el.badgeFftStatus.textContent = `Score: ${fftScore}%`;
+    el.fftDetailsBody.innerHTML = `<strong>Spectral Decay Slope:</strong> ${fft.note || 'Examined radial frequency decay and periodic lattice peaks.'}`;
+
+    // 5. ML
+    const ml = sig.ml || {};
+    el.badgeMlStatus.textContent = ml.score !== undefined ? `Median: ${(ml.score * 100).toFixed(0)}%` : 'Active';
+    el.mlDetailsBody.innerHTML = `<strong>Vision Ensemble:</strong> Analyzed using ViT-B/16, SDXL specialist, human-vs-AI classifier, and generalizing DINOv2 probe.`;
+
+    // 6. Gemini
+    el.badgeGeminiStatus.textContent = 'On-Demand';
+    el.geminiDetailsBody.textContent = 'Click "Deep Check (Gemini)" at top right to inspect semantic anomalies via Gemini multimodal reasoning.';
+  }
+
+  // ===========================================================================
+  // Gemini Deep Check (On-Demand)
+  // ===========================================================================
+
+  async function triggerGeminiDeepCheck() {
+    if (!state.selectedId) return;
+    const item = state.queue.find(i => i.id === state.selectedId);
+    if (!item) return;
+
+    el.deepCheckGeminiBtn.disabled = true;
+    el.deepCheckGeminiBtn.textContent = '✨ Analyzing with Gemini...';
+
     try {
       const formData = new FormData();
       formData.append('image', item.file, item.name);
 
-      const res = await fetch('/analyze', {
+      const res = await fetch('/analyze_gemini', {
         method: 'POST',
         body: formData,
-        signal: state.abortController.signal,
       });
 
+      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
       const data = await res.json();
-      if (res.ok && data.status === 'success' && data.result) {
-        item.result = data.result;
-        item.status = 'done';
-        state.analysisCache.set(item.hash, data.result);
-      } else {
-        item.status = 'failed';
-        item.error = data.message || 'Analysis error';
+
+      if (!data.api_key_configured) {
+        alert('Gemini API key is not configured in .env. RealLens operates completely locally.');
+        return;
+      }
+
+      if (data.status === 'success' && data.gemini) {
+        const g = data.gemini;
+        el.geminiResultCard.style.display = 'flex';
+        el.geminiCardBadge.textContent = g.score !== null ? `AI Probability: ${(g.score * 100).toFixed(1)}% (${g.confidence} confidence)` : 'Inconclusive';
+        el.geminiPromptBox.textContent = 'Digital forensics expert prompt: inspect irregular anatomy, impossible lighting, depth-of-field, sensor noise floor, and geometric coherence.';
+
+        el.geminiObservationsList.innerHTML = '';
+        const obs = g.observations || g.evidence || ['No specific anomalies flagged.'];
+        obs.forEach(line => {
+          const li = document.createElement('li');
+          li.textContent = line;
+          el.geminiObservationsList.appendChild(li);
+        });
       }
     } catch (err) {
-      if (err.name === 'AbortError') {
-        item.status = 'queued';
-        break;
+      alert(`Gemini check failed: ${err.message}`);
+    } finally {
+      el.deepCheckGeminiBtn.disabled = false;
+      el.deepCheckGeminiBtn.textContent = '✨ Deep Check (Gemini)';
+    }
+  }
+
+  // ===========================================================================
+  // Copy Report & Export (CSV, JSON)
+  // ===========================================================================
+
+  function copySelectedReport() {
+    if (!state.selectedId) return;
+    const item = state.queue.find(i => i.id === state.selectedId);
+    const r = state.results.find(res => res._id === state.selectedId) || (item ? item.result : null);
+    if (!r) return;
+
+    const normV = normalizeVerdict(r.verdict);
+    const prob = r.probability_display || `${r.ai_percentage}%`;
+    const md = [
+      `# RealLens Forensic Inspection Report`,
+      `**File Name:** ${r.filename || item?.name}`,
+      `**Dimensions:** ${r.image_dimensions || 'N/A'} | **Image Type:** ${r.image_type || 'photo-like'}`,
+      `**Analysis Verdict:** ${normV} (${prob}, ${r.confidence || 'medium'} confidence)`,
+      `**Model Spread:** ${r.spread !== undefined ? (r.spread * 100).toFixed(1) + '%' : 'N/A'}`,
+      `\n## Why This Verdict?`,
+      `${r.why_this_verdict || r.summary_reason}`,
+      `\n## Multi-Signal Summary`,
+      `- **Camera Metadata:** ${r.signals?.metadata?.camera_model || 'None detected'}`,
+      `- **C2PA Credentials:** ${r.signals?.c2pa?.manifest_found ? 'Verified' : 'Absent'}`,
+      `- **Error Level Analysis (ELA):** Score ${r.signals?.ela?.score !== undefined ? (r.signals.ela.score * 100).toFixed(0) + '%' : 'N/A'}`,
+      `- **FFT Spectral Frequency:** Score ${r.signals?.frequency?.score !== undefined ? (r.signals.frequency.score * 100).toFixed(0) + '%' : 'N/A'}`,
+      `\n*Generated by RealLens Forensic Engine • Privacy-Preserving Local Inference*`,
+    ].join('\n');
+
+    navigator.clipboard.writeText(md).then(() => {
+      const origText = el.copyReportBtn.textContent;
+      el.copyReportBtn.textContent = '✓ Copied!';
+      setTimeout(() => {
+        el.copyReportBtn.textContent = origText;
+      }, 2000);
+    }).catch(err => {
+      alert('Failed to copy to clipboard.');
+    });
+  }
+
+  function downloadCsv() {
+    if (state.results.length === 0) return;
+    const headers = ['Filename', 'Image Type', 'Verdict', 'Score / Range', 'Spread', 'Confidence', 'Time (s)'];
+    const rows = state.results.map(r => [
+      `"${(r.filename || '').replace(/"/g, '""')}"`,
+      `"${r.image_type || 'photo-like'}"`,
+      `"${normalizeVerdict(r.verdict)}"`,
+      `"${r.probability_display || r.ai_percentage || ''}"`,
+      `"${r.spread !== undefined ? (r.spread * 100).toFixed(1) + '%' : ''}"`,
+      `"${r.confidence || ''}"`,
+      `"${r.time_taken_seconds || ''}"`,
+    ]);
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `reallens_results_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  function downloadJson() {
+    if (state.results.length === 0) return;
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.results, null, 2));
+    const link = document.createElement('a');
+    link.setAttribute('href', dataStr);
+    link.setAttribute('download', `reallens_results_${Date.now()}.json`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // ===========================================================================
+  // Modals & Helpers
+  // ===========================================================================
+
+  window.toggleAccordion = function (rowId) {
+    const row = document.getElementById(rowId);
+    if (row) {
+      row.classList.toggle('open');
+    }
+  };
+
+  window.closeZoomModal = function () {
+    el.zoomModal.classList.remove('open');
+  };
+
+  function openZoomModal() {
+    if (!state.selectedId) return;
+    const src = state.viewMode === 'orig' ? el.elaImgOriginal.src : el.elaImgHeatmap.src;
+    el.zoomModalImage.src = src;
+    el.zoomModalTitle.textContent = state.viewMode === 'orig' ? 'Original Image (Full Res)' : 'ELA Heatmap (Full Res)';
+    el.zoomModal.classList.add('open');
+  }
+
+  function getVerdictBadgeClass(normV) {
+    switch (normV) {
+      case 'Likely AI': return 'verdict-likely-ai';
+      case 'Leaning AI': return 'verdict-leaning-ai';
+      case 'Inconclusive': return 'verdict-inconclusive';
+      case 'Leaning Real': return 'verdict-leaning-real';
+      case 'Likely Real': return 'verdict-likely-real';
+      case 'Failed': return 'verdict-failed';
+      default: return 'verdict-inconclusive';
+    }
+  }
+
+  function getVerdictDotClass(v) {
+    const normV = normalizeVerdict(v);
+    switch (normV) {
+      case 'Likely AI': return 'red';
+      case 'Leaning AI': return 'orange';
+      case 'Inconclusive': return 'yellow';
+      case 'Leaning Real': return 'teal';
+      case 'Likely Real': return 'green';
+      case 'Failed': return 'dark-red';
+      default: return 'gray';
+    }
+  }
+
+  function getVerdictBannerBorderClass(normV) {
+    switch (normV) {
+      case 'Likely AI': return 'verdict-border-likely-ai';
+      case 'Leaning AI': return 'verdict-border-leaning-ai';
+      case 'Inconclusive': return 'verdict-border-inconclusive';
+      case 'Leaning Real': return 'verdict-border-leaning-real';
+      case 'Likely Real': return 'verdict-border-likely-real';
+      default: return '';
+    }
+  }
+
+  // ===========================================================================
+  // Event Listeners Wiring
+  // ===========================================================================
+
+  // Dropzone click & drag
+  el.dropzone.addEventListener('click', () => el.fileInput.click());
+  el.fileInput.addEventListener('change', e => {
+    if (e.target.files.length > 0) {
+      addFilesToQueue(e.target.files);
+      el.fileInput.value = '';
+    }
+  });
+
+  ['dragenter', 'dragover'].forEach(name => {
+    el.dropzone.addEventListener(name, e => {
+      e.preventDefault();
+      e.stopPropagation();
+      el.dropzone.classList.add('drag-over');
+    });
+  });
+
+  ['dragleave', 'drop'].forEach(name => {
+    el.dropzone.addEventListener(name, e => {
+      e.preventDefault();
+      e.stopPropagation();
+      el.dropzone.classList.remove('drag-over');
+    });
+  });
+
+  el.dropzone.addEventListener('drop', e => {
+    if (e.dataTransfer && e.dataTransfer.files) {
+      addFilesToQueue(e.dataTransfer.files);
+    }
+  });
+
+  // Clipboard Paste (Ctrl+V anywhere on window)
+  window.addEventListener('paste', e => {
+    if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+      addFilesToQueue(e.clipboardData.files);
+    }
+  });
+
+  // Buttons
+  el.analyzeAllBtn.addEventListener('click', analyzeAll);
+  el.cancelBtn.addEventListener('click', () => { state.cancelRequested = true; });
+  el.clearAllBtn.addEventListener('click', clearAll);
+  el.downloadCsvBtn.addEventListener('click', downloadCsv);
+  el.downloadJsonBtn.addEventListener('click', downloadJson);
+  el.copyReportBtn.addEventListener('click', copySelectedReport);
+  el.deepCheckGeminiBtn.addEventListener('click', triggerGeminiDeepCheck);
+  el.zoomForensicBtn.addEventListener('click', openZoomModal);
+  el.clearFilterBtn.addEventListener('click', () => setFilter('all'));
+
+  // ELA View Mode Toggles
+  el.viewModeOrig.addEventListener('click', () => updateViewMode('orig'));
+  el.viewModeEla.addEventListener('click', () => updateViewMode('ela'));
+  el.viewModeDual.addEventListener('click', () => updateViewMode('dual'));
+
+  // Summary Strip Filter Pills
+  el.summaryStrip.querySelectorAll('.summary-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const f = pill.getAttribute('data-filter');
+      setFilter(f);
+    });
+  });
+
+  // Sortable table headers
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.getAttribute('data-sort');
+      handleSort(col);
+    });
+  });
+
+  // Start health check
+  checkHealth();
+
+  // Seed demo items if ?demo=1 is in query parameters
+  if (window.location.search.includes('demo=1')) {
+    const demoItems = [
+      {
+        id: 'demo_1',
+        name: 'portrait_real_camera.jpg',
+        size: 2450000,
+        status: 'done',
+        verdict: 'Likely Real',
+        thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%233DDC97" font-size="10" text-anchor="middle">REAL</text></svg>',
+        result: {
+          _id: 'demo_1',
+          _thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%233DDC97" font-size="10" text-anchor="middle">REAL</text></svg>',
+          filename: 'portrait_real_camera.jpg',
+          image_dimensions: '1920x1080',
+          image_type: 'photo-like',
+          is_photo_like: true,
+          verdict: 'Likely Real',
+          confidence: 'high',
+          ai_probability: 0.12,
+          ai_percentage: 12.0,
+          probability_display: '12.0%',
+          spread: 0.14,
+          min_model_score: 0.05,
+          max_model_score: 0.19,
+          time_taken_seconds: 0.48,
+          cached: false,
+          summary_reason: 'Photographic sensor noise characteristics, natural spectral decay, and vision models align with authentic origin.',
+          why_this_verdict: 'All active vision models agree on authentic photographic origin. Natural camera sensor noise floor, Fourier spectral slope, and compression characteristics align with real-world capture.',
+          signals: {
+            metadata: { camera_model: 'Canon EOS 5D Mark IV', evidence: ['Valid EXIF headers present.', 'Exposure 1/250s at f/2.8, ISO 200.'] },
+            c2pa: { manifest_found: false },
+            ela: { score: 0.14, interpretation: 'Natural, uniform error level across all photographic JPEG blocks.' },
+            frequency: { score: 0.18, note: 'Consistent radial 1/f^alpha spectral power decay.' },
+            ml: {
+              score: 0.11,
+              models: {
+                'dima806/ai_vs_real_image_detection': { score: 0.05 },
+                'Organika/sdxl-detector': { score: 0.12 },
+                'Ateeqq/ai-vs-human-image-detector': { score: 0.08 },
+                'generalizing_dinov2_probe': { score: 0.19 }
+              }
+            }
+          }
+        }
+      },
+      {
+        id: 'demo_2',
+        name: 'synthetic_cyberpunk_sdxl.png',
+        size: 3200000,
+        status: 'done',
+        verdict: 'Likely AI',
+        thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23FF6B6B" font-size="10" text-anchor="middle">AI</text></svg>',
+        result: {
+          _id: 'demo_2',
+          _thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23FF6B6B" font-size="10" text-anchor="middle">AI</text></svg>',
+          filename: 'synthetic_cyberpunk_sdxl.png',
+          image_dimensions: '1024x1024',
+          image_type: 'photo-like',
+          is_photo_like: true,
+          verdict: 'Likely AI',
+          confidence: 'high',
+          ai_probability: 0.96,
+          ai_percentage: 96.0,
+          probability_display: '96.0%',
+          spread: 0.08,
+          min_model_score: 0.91,
+          max_model_score: 0.99,
+          time_taken_seconds: 0.52,
+          cached: false,
+          summary_reason: 'Consistent AI visual characteristics and artifact patterns identified across detectors.',
+          why_this_verdict: 'Vision models demonstrate strong consensus on synthetic diffusion textures, supported by spectral frequency patterns consistent with generative upsampling.',
+          signals: {
+            metadata: { camera_model: null, ai_tool_detected: 'Stable Diffusion XL', evidence: ['Software chunk: NovelAI / WebUI'] },
+            c2pa: { manifest_found: false },
+            ela: { score: 0.88, interpretation: 'Abnormal variance gradient across flat and detailed regions.' },
+            frequency: { score: 0.92, note: 'Spectral peaks at high-frequency periodic lattice coordinates.' },
+            ml: {
+              score: 0.96,
+              models: {
+                'dima806/ai_vs_real_image_detection': { score: 0.98 },
+                'Organika/sdxl-detector': { score: 0.99 },
+                'Ateeqq/ai-vs-human-image-detector': { score: 0.91 },
+                'generalizing_dinov2_probe': { score: 0.95 }
+              }
+            }
+          }
+        }
+      },
+      {
+        id: 'demo_3',
+        name: 'whatsapp_compressed_street.jpg',
+        size: 180000,
+        status: 'done',
+        verdict: 'Inconclusive',
+        thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23F5B454" font-size="10" text-anchor="middle">INCON</text></svg>',
+        result: {
+          _id: 'demo_3',
+          _thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23F5B454" font-size="10" text-anchor="middle">INCON</text></svg>',
+          filename: 'whatsapp_compressed_street.jpg',
+          image_dimensions: '1280x720',
+          image_type: 'photo-like',
+          is_photo_like: true,
+          is_heavily_recompressed: true,
+          verdict: 'Inconclusive',
+          confidence: 'low (heavy recompression)',
+          ai_probability: 0.50,
+          ai_percentage: null,
+          probability_display: 'between 35% and 72% across models',
+          spread: 0.37,
+          min_model_score: 0.35,
+          max_model_score: 0.72,
+          time_taken_seconds: 0.54,
+          cached: false,
+          summary_reason: 'Heavy lossy recompression detected (DCT blockiness: 1.28, 1280x720). Compression artifacts obscure subtle sensor noise.',
+          why_this_verdict: 'This image shows clear evidence of lossy compression (such as WhatsApp/social messaging export, downscaling, or low JPEG quality). Compression macroblocks destroy fine camera sensor noise and soften generative artifacts. Because model predictions span from 35% to 72%, RealLens refuses to force an unreliable guess and issues an honest Inconclusive verdict.',
+          signals: {
+            metadata: { camera_model: null, evidence: [] },
+            c2pa: { manifest_found: false },
+            ela: { score: 0.50, interpretation: 'High uniform macroblock variance caused by heavy secondary lossy recompression.' },
+            frequency: { score: 0.50, note: 'High frequencies severely truncated by JPEG quantization matrix.' },
+            ml: {
+              score: 0.52,
+              models: {
+                'dima806/ai_vs_real_image_detection': { score: 0.35 },
+                'Organika/sdxl-detector': { score: 0.72 },
+                'Ateeqq/ai-vs-human-image-detector': { score: 0.52 },
+                'generalizing_dinov2_probe': { score: 0.50 }
+              }
+            }
+          }
+        }
+      },
+      {
+        id: 'demo_4',
+        name: 'web_screenshot_dashboard.png',
+        size: 420000,
+        status: 'done',
+        verdict: 'Inconclusive',
+        thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23A78BFA" font-size="10" text-anchor="middle">UI</text></svg>',
+        result: {
+          _id: 'demo_4',
+          _thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23A78BFA" font-size="10" text-anchor="middle">UI</text></svg>',
+          filename: 'web_screenshot_dashboard.png',
+          image_dimensions: '1920x1080',
+          image_type: 'screenshot/UI',
+          is_photo_like: false,
+          unreliable_notice: 'This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type.',
+          verdict: 'Inconclusive',
+          confidence: 'low',
+          ai_probability: 0.50,
+          ai_percentage: null,
+          probability_display: 'between 2% and 99% across models',
+          spread: 0.97,
+          min_model_score: 0.02,
+          max_model_score: 0.99,
+          time_taken_seconds: 0.42,
+          cached: false,
+          summary_reason: 'Non-photographic image detected. Classified as screenshot/UI.',
+          why_this_verdict: 'Identified as a screenshot/UI graphic with sharp font edges and flat fills. Vision models trained on camera photographs produce false alarms on digital graphics. Without cryptographic provenance, verdict is honestly Inconclusive.',
+          signals: {
+            metadata: { camera_model: null, evidence: [] },
+            c2pa: { manifest_found: false },
+            ela: { score: null, interpretation: 'ELA is not meaningful for non-photographic graphics.' },
+            frequency: { score: 0.50, note: 'Artificial step functions from raster text.' },
+            ml: {
+              score: 0.65,
+              models: {
+                'dima806/ai_vs_real_image_detection': { score: 0.02 },
+                'Organika/sdxl-detector': { score: 0.99 },
+                'Ateeqq/ai-vs-human-image-detector': { score: 0.95 },
+                'generalizing_dinov2_probe': { score: 0.40 }
+              }
+            }
+          }
+        }
+      },
+      {
+        id: 'demo_5',
+        name: 'vacation_coastal_sunset.jpg',
+        size: 1900000,
+        status: 'done',
+        verdict: 'Leaning Real',
+        thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%232DD4BF" font-size="10" text-anchor="middle">LEAN</text></svg>',
+        result: {
+          _id: 'demo_5',
+          _thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%232DD4BF" font-size="10" text-anchor="middle">LEAN</text></svg>',
+          filename: 'vacation_coastal_sunset.jpg',
+          image_dimensions: '2048x1536',
+          image_type: 'photo-like',
+          is_photo_like: true,
+          verdict: 'Leaning Real',
+          confidence: 'medium',
+          ai_probability: 0.38,
+          ai_percentage: 38.0,
+          probability_display: '38.0%',
+          spread: 0.16,
+          min_model_score: 0.28,
+          max_model_score: 0.44,
+          time_taken_seconds: 0.46,
+          cached: false,
+          summary_reason: 'Primarily natural characteristics, though compression leaves slight ambiguity.',
+          why_this_verdict: 'Image exhibits photographic characteristics and natural spectral decay, though compression re-encoding leaves minor residual uncertainty.',
+          signals: {
+            metadata: { camera_model: 'iPhone 13', evidence: ['Apple iPhone EXIF tags.'] },
+            c2pa: { manifest_found: false },
+            ela: { score: 0.32, interpretation: 'Expected camera JPEG compression profile.' },
+            frequency: { score: 0.36, note: 'Normal optical decay slope.' },
+            ml: {
+              score: 0.38,
+              models: {
+                'dima806/ai_vs_real_image_detection': { score: 0.32 },
+                'Organika/sdxl-detector': { score: 0.44 },
+                'Ateeqq/ai-vs-human-image-detector': { score: 0.28 },
+                'generalizing_dinov2_probe': { score: 0.39 }
+              }
+            }
+          }
+        }
       }
-      item.status = 'failed';
-      item.error = err.message || 'Network request failed';
-    }
+    ];
 
-    const elapsedSec = (performance.now() - t0) / 1000;
-    state.timesElapsed.push(elapsedSec);
+    demoItems.forEach(item => {
+      state.queue.push(item);
+      state.results.push(item.result);
+    });
 
-    processed++;
-    updateBatchProgress(processed, total);
-    updateSummaryCounts();
-    renderTable();
-
-    if (state.selectedIndex === state.queue.indexOf(item)) {
-      if (item.status === 'done') renderDetailView(item);
-      else renderFailedState(item);
-    }
+    renderQueue();
+    renderResultsTable();
+    updateSummaryStrip();
+    updateQueueStats();
+    selectItem('demo_3'); // Focus on the WhatsApp inconclusive image by default
   }
 
-  state.isProcessing = false;
-  state.abortController = null;
-  analyzeAllBtn.style.display = 'inline-flex';
-  cancelBtn.style.display = 'none';
-  progressContainer.style.display = 'none';
-}
+})();
 
-function updateBatchProgress(processed, total) {
-  const pct = Math.round((processed / total) * 100);
-  progressFill.style.width = `${pct}%`;
-  progressText.textContent = `Analyzing ${processed} of ${total} images (${pct}%)`;
-
-  if (state.timesElapsed.length > 0) {
-    const avgSec = state.timesElapsed.reduce((a, b) => a + b, 0) / state.timesElapsed.length;
-    const remaining = Math.max(0, (total - processed) * avgSec);
-    progressEta.textContent = `~${avgSec.toFixed(1)}s/img • Est. remaining: ${remaining.toFixed(0)}s`;
-  } else {
-    progressEta.textContent = 'Calculating ETA...';
-  }
-}
-
-function cancelBatchProcessing() {
-  if (state.abortController) {
-    state.abortController.abort();
-  }
-}
-
-function clearQueue() {
-  if (state.isProcessing) {
-    cancelBatchProcessing();
-  }
-  state.queue.forEach(item => {
-    if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
-  });
-  state.queue = [];
-  state.selectedIndex = -1;
-  updateQueueVisibility();
-  updateSummaryCounts();
-  renderTable();
-
-  detailEmpty.style.display = 'flex';
-  detailSkeleton.style.display = 'none';
-  detailContent.style.display = 'none';
-}
-
-window.removeQueueItem = function(id, event) {
-  if (event) event.stopPropagation();
-  const idx = state.queue.findIndex(item => item.id === id);
-  if (idx !== -1) {
-    const item = state.queue[idx];
-    if (item.thumbUrl) URL.revokeObjectURL(item.thumbUrl);
-    state.queue.splice(idx, 1);
-
-    if (state.selectedIndex === idx) {
-      state.selectedIndex = state.queue.length > 0 ? Math.min(idx, state.queue.length - 1) : -1;
-    } else if (state.selectedIndex > idx) {
-      state.selectedIndex--;
-    }
-
-    updateQueueVisibility();
-    updateSummaryCounts();
-    renderTable();
-
-    if (state.selectedIndex >= 0) {
-      selectImageByIndex(state.selectedIndex);
-    } else {
-      detailEmpty.style.display = 'flex';
-      detailSkeleton.style.display = 'none';
-      detailContent.style.display = 'none';
-    }
-  }
-};
-
-// Keyboard Arrow Navigation
-function navigateQueue(delta) {
-  if (state.queue.length === 0) return;
-  let newIdx = state.selectedIndex + delta;
-  if (newIdx < 0) newIdx = state.queue.length - 1;
-  if (newIdx >= state.queue.length) newIdx = 0;
-  selectImageByIndex(newIdx);
-
-  // Scroll active table row into view
-  const activeTr = queueTbody.querySelector('.selected-row');
-  if (activeTr) {
-    activeTr.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
-}
-
-// Modal Zoom
-function openZoomModal() {
-  const imgSrc = (elaActiveImg && elaActiveImg.src) || (compOriginal && compOriginal.src);
-  if (!imgSrc) return;
-  zoomModalImg.src = imgSrc;
-  zoomTitle.textContent = `${detailFilename.textContent} — ${elaViewCaption.textContent}`;
-  zoomModal.classList.add('active');
-}
-
-window.closeZoomModal = function() {
-  zoomModal.classList.remove('active');
-};
-
-// Export Handlers
-function exportToCsv() {
-  if (state.queue.length === 0) return;
-  const rows = [
-    ['Filename', 'Type', 'Verdict', 'Score_or_Range', 'AI_Probability', 'Spread', 'Time_Sec', 'Confidence', 'Summary', 'DINOv2_Probe', 'Dima806', 'SDXL_Detector', 'Ateeqq']
-  ];
-
-  state.queue.forEach(item => {
-    const r = item.result;
-    if (!r) {
-      rows.push([item.name, 'unknown', item.status, '—', '—', '—', '—', '—', item.error || 'Pending', '', '', '', '']);
-    } else {
-      const perModel = r.signals?.ml_ensemble?.per_model_scores || {};
-      rows.push([
-        r.filename || item.name,
-        r.image_type || 'photo-like',
-        r.verdict || 'Inconclusive',
-        r.probability_display || (r.ai_percentage ? `${r.ai_percentage}%` : '—'),
-        r.ai_probability !== undefined ? r.ai_probability : '',
-        r.spread !== undefined ? r.spread : '',
-        r.time_taken_seconds || '',
-        r.confidence || '',
-        `"${(r.summary_reason || '').replace(/"/g, '""')}"`,
-        perModel['generalizing_dinov2_probe'] !== undefined ? perModel['generalizing_dinov2_probe'] : '',
-        perModel['dima806/ai_vs_real_image_detection'] !== undefined ? perModel['dima806/ai_vs_real_image_detection'] : '',
-        perModel['Organika/sdxl-detector'] !== undefined ? perModel['Organika/sdxl-detector'] : '',
-        perModel['Ateeqq/ai-vs-human-image-detector'] !== undefined ? perModel['Ateeqq/ai-vs-human-image-detector'] : '',
-      ]);
-    }
-  });
-
-  const csvContent = 'data:text/csv;charset=utf-8,' + rows.map(e => e.join(',')).join('\n');
-  const encodedUri = encodeURI(csvContent);
-  const link = document.createElement('a');
-  link.setAttribute('href', encodedUri);
-  link.setAttribute('download', `reallens_batch_report_${Date.now()}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-}
-
-function exportToJson() {
-  if (state.queue.length === 0) return;
-  const payload = {
-    exported_at: new Date().toISOString(),
-    total_images: state.queue.length,
-    results: state.queue.map(item => ({
-      name: item.name,
-      size: item.size,
-      status: item.status,
-      result: item.result,
-      error: item.error,
-    })),
-  };
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `reallens_forensics_${Date.now()}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function copyReportToClipboard() {
-  if (state.queue.length === 0) return;
-
-  const counts = {
-    'Likely AI': 0, 'Leaning AI': 0, 'Inconclusive': 0, 'Leaning real': 0, 'Likely real': 0, 'Failed': 0,
-  };
-
-  state.queue.forEach(item => {
-    if (item.status === 'failed') counts['Failed']++;
-    else if (item.result && counts[item.result.verdict] !== undefined) counts[item.result.verdict]++;
-  });
-
-  let md = `# RealLens Forensics Summary Report\n`;
-  md += `**Date:** ${new Date().toLocaleString()}\n`;
-  md += `**Total Analyzed:** ${state.queue.length}\n\n`;
-  md += `### Verdict Summary\n`;
-  md += `- Likely AI: ${counts['Likely AI']}\n`;
-  md += `- Leaning AI: ${counts['Leaning AI']}\n`;
-  md += `- Inconclusive: ${counts['Inconclusive']}\n`;
-  md += `- Leaning real: ${counts['Leaning real']}\n`;
-  md += `- Likely real: ${counts['Likely real']}\n`;
-  if (counts['Failed'] > 0) md += `- Failed: ${counts['Failed']}\n`;
-
-  md += `\n### Detailed Breakdown\n`;
-  md += `| File | Image Type | Verdict | Probability / Range | Spread | Time |\n`;
-  md += `| :--- | :--- | :--- | :--- | :--- | :--- |\n`;
-
-  state.queue.forEach(item => {
-    const r = item.result;
-    if (r) {
-      md += `| ${r.filename || item.name} | ${r.image_type} | ${r.verdict} | ${r.probability_display || r.ai_percentage + '%'} | ${(r.spread * 100).toFixed(0)}% | ${r.time_taken_seconds}s |\n`;
-    } else {
-      md += `| ${item.name} | unknown | ${item.status} | — | — | — |\n`;
-    }
-  });
-
-  navigator.clipboard.writeText(md).then(() => {
-    alert('Forensics summary copied to clipboard in Markdown format!');
-  }).catch(() => {
-    alert('Failed to copy report to clipboard.');
-  });
-}
-
-// Helpers
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}

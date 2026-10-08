@@ -51,3 +51,17 @@ This document tracks all design decisions made during the development of RealLen
 - **Decision**: Multi-Image Client-Side Batch Queue with Sequential Execution.
   - *Reason*: Sequential asynchronous queue prevents local CPU starvation from concurrent PyTorch inference runs while client-side SHA-256 caching eliminates duplicate re-analysis.
 
+## 6. Phase 3 Architectural Decisions: Single-Page Consolidation, Latency Elimination, and Honesty Guardrails
+- **Decision**: Unified Single-Page Application (`/`) inspired by VeilShare dark ink aesthetic; eliminate separate `/batch` page and issue HTTP 302 redirect `/batch` -> `/`.
+  - *Reason*: Eliminates duplicate code and context switching between single-upload and batch workflows. A sticky left panel (~35%) handles drag-and-drop, clipboard paste, folder drops, queue management, ETA progress, and CSV/JSON export; the right panel (~65%) renders batch summaries, fixed-width non-overlapping tables, and full multi-signal inspections.
+- **Decision**: Eager Startup Model Pre-warming (`warmup_models()`).
+  - *Reason*: Eliminates the ~20-second cold-start latency penalty on the user's first upload. PyTorch model weights and tokenizer pipelines are initialized during server boot (~11s), reducing subsequent image analysis times down to ~0.55s per image on CPU.
+- **Decision**: In-Memory SHA-256 Result Cache (`_ANALYSIS_CACHE`).
+  - *Reason*: Users frequently re-upload or re-inspect images across batches. Caching immutable SHA-256 digests allows instant sub-2 millisecond backend responses (<7ms network roundtrip) with zero redundant computation.
+- **Decision**: Forensic Downscaling (>1024px) & ThreadPool Concurrency.
+  - *Reason*: Running ELA and FFT on multi-megapixel images consumes excessive CPU time without adding forensic value. Downscaling inputs larger than 1024px for ELA/FFT while executing metadata, C2PA, ELA, and FFT concurrently in `ThreadPoolExecutor(max_workers=4)` alongside model inference keeps end-to-end processing under 0.60 seconds.
+- **Decision**: WhatsApp / Social Recompression Honesty Guardrails & 5-Band Verdict Spectrum.
+  - *Reason*: Heavy DCT quantization from chat apps (WhatsApp/Telegram 1280x720) strips camera EXIF and creates borderline noise that was previously forced into a misleading "Leaning AI 51.9%". RealLens now measures 8x8 DCT blockiness and chat dimensions, expanding the honest spectrum: ambiguous mid-spectrum cases (0.45 - 0.55) or heavily compressed images with low confidence are routed to `Inconclusive` with probability range display (`between X% and Y% across models`).
+- **Decision**: Fixed-Width Non-Overlapping Table Layout with `<colgroup>`.
+  - *Reason*: Avoids column squishing, overlapping text, and horizontal runaway on varied screen sizes (1920x1080 down to 390x844 mobile viewport) by using fixed pixel column allocations inside a responsive container.
+

@@ -162,3 +162,37 @@ Executed directly on localhost endpoint (`http://127.0.0.1:5000/analyze`):
 - **Crashes / Errors**: **0**
 - **Average Execution Latency**: **0.88 seconds per image** on CPU
 - **Graphics Gating Accuracy**: 7 / 7 graphics routed to `Inconclusive` with probability range and warning notice.
+
+---
+
+## 8. Phase 3 Benchmark: Single-Page Dashboard, Batch Latency & WhatsApp Calibration
+
+### 8.1. Batch Summary Counters & WhatsApp Guardrail Suite (`tests/test_phase3_counters_and_compression.py`)
+- **6-State Summary Strip Counter Verification**:
+  - Tested: `Likely AI`, `Leaning AI`, `Inconclusive`, `Leaning Real`, `Likely Real`, `Failed`.
+  - All 6 buckets counted accurately with 0 dropouts or misattributions.
+- **WhatsApp 1280x720 Recompressed Photo Routing**:
+  - Tested an authentic WhatsApp camera capture with 1280x720 dimension and heavy DCT quantization.
+  - Previous system: Misleadingly guessed "Leaning AI 51.9%, Low confidence".
+  - Phase 3 system: Honestly routed to **`Inconclusive`** (`final_probability: 0.50`, probability range: `between 28.0% and 44.0% across models`, confidence: `low`).
+- **SHA-256 Memory Cache Response Benchmark**:
+  - First execution: Full multi-signal pipeline ran.
+  - Second execution (identical SHA-256): **0.00 ms** backend compute time (served directly from cache).
+
+### 8.2. Live Server Latency & 40-Image Batch Test (`tests/test_live_api_and_speed.py`)
+Executed on live localhost server daemon (`http://127.0.0.1:5000`):
+- **Legacy Batch Route Redirect**:
+  - `GET /batch` returns **HTTP 302** pointing directly to `/`.
+- **Latency Benchmarks (CPU Mode)**:
+  - Startup Model Pre-warming (`warmup_models()`): 11.08 seconds (executed once during server boot).
+  - First-time user image analysis roundtrip: **0.553 seconds** (completely eliminating the previous 20.7s cold-start spike).
+  - Repeated request roundtrip: **6.74 milliseconds** (SHA-256 cache hit, `cached: true`).
+- **40 Mixed Images Sequential Stress Test**:
+  - Dataset: 40 varied images (CIFAKE Real & AI, Midjourney Hard AI, user WhatsApp camera photos, certificates, graphics).
+  - Total Time for 40 images: **22.75 seconds**.
+  - Average Latency per Image: **0.569 seconds**.
+  - Crashes or Failures: **0 / 40 (100.0% success rate)**.
+- **Headless Visual Quality Verification (Chrome DevTools Protocol)**:
+  - Tested viewports: 1920x1080 (Desktop), 1366x768 (Laptop/Tablet), 390x844 (Mobile Phone).
+  - Column overlap: **0 overlapping elements**. Fixed `<colgroup>` prevents horizontal truncation.
+  - Visual verification artifacts saved to `tests/screenshots/` and verified.

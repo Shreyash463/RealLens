@@ -1,4 +1,4 @@
-# RealLens 🔍 (Phase 2)
+# RealLens 🔍 (Phase 3)
 
 **RealLens** is a local, privacy-first forensic analysis tool that estimates whether an image is AI-generated or an authentic camera photograph / real graphic.
 
@@ -10,8 +10,9 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 
 1. **Probability + Evidence, Never "100% Proof"**: Every output is an estimate accompanied by detector evidence. Missing metadata or watermarks is neutral and never constitutes proof of authenticity.
 2. **Empirical Grounding**: All performance metrics reported in [`EVAL_REPORT.md`](EVAL_REPORT.md) stem from automated test runs on real benchmark sets. No simulated or hardcoded metrics.
-3. **Disagreement Transparency**: When machine learning vision models disagree substantially, RealLens refuses to force a verdict; it flags the uncertainty and assigns the sample to an explicit `Uncertain` band with a manual inspection recommendation.
-4. **Held-Out Integrity**: The final test sets (`data/test/` and `data/hard_test/`) were strictly held out and evaluated only **once** after concluding all tuning.
+3. **Disagreement Transparency**: When machine learning vision models disagree substantially, RealLens refuses to force a verdict; it flags the uncertainty and assigns the sample to an explicit `Inconclusive` band with a probability range (`between X% and Y% across models`).
+4. **Compression Awareness**: Images with severe chat recompression (WhatsApp/Telegram 1280x720) or non-photographic graphics are screened by an image-type gate, preventing false accusations on borderline artifacts.
+5. **Held-Out Integrity**: The final test sets (`data/test/` and `data/hard_test/`) were strictly held out and evaluated only **once** after concluding all tuning.
 
 ---
 
@@ -46,7 +47,7 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 
 ---
 
-## Empirical Benchmark Performance (Phase 2)
+## Empirical Benchmark Performance
 
 ### 1. Easy Benchmark (Held-Out CIFAKE Split, 150 images: 75 Real, 75 AI)
 - **Accuracy**: **92.00%** (+6.67% improvement in Phase 2)

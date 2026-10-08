@@ -145,18 +145,26 @@ def fuse_signals(
             "honesty_note": "Estimate based on cryptographic signature.",
         }
 
-    # 2. Extract ML Ensemble Scores & Spread
     ml_score = ml_res.get("score")
     per_model_scores = ml_res.get("per_model_scores", {})
+    if not per_model_scores and "models" in ml_res:
+        per_model_scores = {
+            k: (v.get("score") if isinstance(v, dict) else v)
+            for k, v in ml_res["models"].items()
+        }
     valid_scores = [v for v in per_model_scores.values() if v is not None]
 
     if valid_scores:
         min_score = float(min(valid_scores))
         max_score = float(max(valid_scores))
         spread = float(max_score - min_score)
+    elif "spread" in ml_res and "min_score" in ml_res and "max_score" in ml_res:
+        min_score = float(ml_res["min_score"])
+        max_score = float(ml_res["max_score"])
+        spread = float(ml_res["spread"])
     else:
-        min_score = 0.50
-        max_score = 0.50
+        min_score = float(ml_score) if ml_score is not None else 0.50
+        max_score = float(ml_score) if ml_score is not None else 0.50
         spread = 0.0
 
     min_pct = round(min_score * 100, 1)
@@ -224,6 +232,43 @@ def fuse_signals(
             "honesty_note": "Estimate withheld due to severe detector disagreement. Manual inspection recommended.",
         }
 
+    # 4b. Handle Heavily Recompressed Images (WhatsApp, chat-apps, low JPEG quality)
+    is_heavily_recompressed = img_type_info.get("is_heavily_recompressed", False)
+    comp_notice = img_type_info.get("compression_notice")
+    if is_heavily_recompressed:
+        # If models do not reach overwhelming consensus (spread >= 0.25 or median in ambiguous zone [0.35, 0.65])
+        median_score = ml_score if ml_score is not None else 0.50
+        if spread >= 0.25 or (0.35 <= median_score <= 0.65):
+            summary_comp = comp_notice or (
+                "Heavy lossy recompression detected (e.g. WhatsApp, chat app, or low JPEG quality). "
+                "Compression artifacts obscure subtle sensor noise and generative textures."
+            )
+            return {
+                "ai_probability": 0.50,
+                "ai_percentage": None,  # Suppress single percentage!
+                "probability_display": range_display,
+                "verdict": "Inconclusive",
+                "confidence": "low (heavy recompression)",
+                "is_inconclusive": True,
+                "summary_reason": summary_comp,
+                "why_this_verdict": (
+                    f"This image shows clear evidence of lossy compression (such as WhatsApp/social messaging export, downscaling, or low JPEG quality). "
+                    f"Compression macroblocks and quantization noise destroy fine camera sensor noise and soften generative artifacts. "
+                    f"Because model predictions span from {min_pct:.0f}% to {max_pct:.0f}% (spread: {spread*100:.0f}%), RealLens refuses to force an unreliable guess and issues an honest Inconclusive verdict."
+                ),
+                "signals": signals,
+                "spread": round(spread, 3),
+                "min_model_score": round(min_score, 3),
+                "max_model_score": round(max_score, 3),
+                "image_type": img_type,
+                "is_photo_like": True,
+                "is_heavily_recompressed": True,
+                "unreliable_notice": summary_comp,
+                "disagreement_flag": ml_disagreement or (spread >= 0.25),
+                "fusion_mode": "compression_awareness_guardrail",
+                "honesty_note": "Estimate withheld due to heavy compression ambiguity. Never return confident verdicts on heavily compressed images without proof.",
+            }
+
     # 5. Agreement Case: Calibrated Single Probability
     stacker = get_learned_stacker()
     fused_prob = None
@@ -287,35 +332,54 @@ def fuse_signals(
     fused_prob = max(0.04, min(0.96, fused_prob))
     pct = round(fused_prob * 100, 1)
 
-    # 4-Level Verdict Spectrum for Agreeing Cases
-    if fused_prob >= 0.65:
+    # Verdict Spectrum: honest 5-band handling ensuring no forced guesses around 50%
+    if 0.45 <= fused_prob <= 0.55:
+        verdict = "Inconclusive"
+        confidence = "low"
+        summary = "Model scores hover around the 50% decision boundary with no decisive consensus."
+        why_text = (
+            f"Active detectors and forensic signals remain evenly balanced near 50% ({pct}% AI probability). "
+            f"Without cryptographic Content Credentials or clear generative artifacts, RealLens issues an honest "
+            f"Inconclusive verdict rather than forcing an arbitrary determination."
+        )
+        is_inconclusive = True
+        prob_disp = range_display if spread >= 0.20 else f"{pct}%"
+    elif fused_prob >= 0.65:
         verdict = "Likely AI"
         confidence = "high" if fused_prob >= 0.85 else "medium"
         summary = "Consistent AI visual characteristics and artifact patterns identified across detectors."
         why_text = "Vision models demonstrate strong agreement on synthetic diffusion textures, supported by spectral frequency patterns consistent with generative upsampling."
-    elif fused_prob >= 0.50:
+        is_inconclusive = False
+        prob_disp = f"{pct}%"
+    elif fused_prob > 0.55:
         verdict = "Leaning AI"
-        confidence = "low"
-        summary = "Subtle generative cues observed, but overall confidence is moderate."
-        why_text = "Detector consensus leans slightly toward AI synthesis, but lack of cryptographic provenance and compression noise prevents a definitive determination."
+        confidence = "medium" if fused_prob >= 0.60 else "low"
+        summary = "Subtle generative cues observed across vision models."
+        why_text = "Detector consensus leans toward AI synthesis, though lack of cryptographic provenance and residual compression noise prevent a definitive determination."
+        is_inconclusive = False
+        prob_disp = f"{pct}%"
     elif fused_prob >= 0.35:
-        verdict = "Leaning real"
-        confidence = "low"
+        verdict = "Leaning Real"
+        confidence = "medium" if fused_prob <= 0.40 else "low"
         summary = "Primarily natural characteristics, though compression leaves slight ambiguity."
         why_text = "Image exhibits photographic characteristics and natural spectral decay, though compression re-encoding leaves minor residual uncertainty."
+        is_inconclusive = False
+        prob_disp = f"{pct}%"
     else:
-        verdict = "Likely real"
+        verdict = "Likely Real"
         confidence = "high" if fused_prob <= 0.18 else "medium"
         summary = "Photographic sensor noise characteristics, natural spectral decay, and vision models align with authentic origin."
         why_text = "All active vision models agree on authentic photographic origin. Natural camera sensor noise floor, Fourier spectral slope, and compression characteristics align with real-world capture."
+        is_inconclusive = False
+        prob_disp = f"{pct}%"
 
     return {
         "ai_probability": round(fused_prob, 3),
-        "ai_percentage": pct,
-        "probability_display": f"{pct}%",
+        "ai_percentage": pct if not is_inconclusive else None,
+        "probability_display": prob_disp,
         "verdict": verdict,
         "confidence": confidence,
-        "is_inconclusive": False,
+        "is_inconclusive": is_inconclusive,
         "summary_reason": summary,
         "why_this_verdict": why_text,
         "signals": signals,

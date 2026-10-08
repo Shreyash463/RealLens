@@ -5,6 +5,8 @@ FFT spectral decomposition, and machine learning ensemble classifiers.
 """
 from __future__ import annotations
 
+import concurrent.futures
+import hashlib
 import io
 import logging
 import os
@@ -13,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 from flask_cors import CORS
 from PIL import Image, ImageOps
 
@@ -26,7 +28,7 @@ if str(ROOT_DIR) not in sys.path:
 from reallens.detectors.c2pa_check import analyze_c2pa
 from reallens.detectors.ela import analyze_ela
 from reallens.detectors.frequency import analyze_frequency
-from reallens.detectors.fusion import fuse_signals
+from reallens.detectors.fusion import fuse_signals, get_learned_stacker
 from reallens.detectors.gemini_layer import analyze_gemini
 from reallens.detectors.image_type import classify_image_type
 from reallens.detectors.metadata import analyze_metadata
@@ -50,8 +52,9 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB max upload
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
 
-# Lazy or eager ML ensemble singleton
+# Singleton ensemble instance and SHA-256 result cache
 _ensemble_instance: MLEnsemble | None = None
+_ANALYSIS_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def get_ensemble() -> MLEnsemble:
@@ -60,6 +63,21 @@ def get_ensemble() -> MLEnsemble:
         logger.info("Initializing ML Ensemble...")
         _ensemble_instance = MLEnsemble()
     return _ensemble_instance
+
+
+def warmup_models() -> None:
+    """Eagerly warms up ML ensemble and pipeline on server startup to eliminate cold-start lag."""
+    logger.info("Eagerly warming up ML models and fusion pipeline...")
+    t_start = time.perf_counter()
+    try:
+        ens = get_ensemble()
+        dummy_img = Image.new("RGB", (224, 224), (128, 128, 128))
+        _ = ens.analyze(dummy_img)
+        get_learned_stacker()
+        dur = round(time.perf_counter() - t_start, 2)
+        logger.info(f"Model warmup completed in {dur}s. Pipeline ready for instant inference.")
+    except Exception as exc:
+        logger.warning(f"Model warmup failed: {exc}")
 
 
 def sanitize_image_bytes(raw_bytes: bytes) -> tuple[Image.Image, bytes]:
@@ -108,35 +126,53 @@ def to_serializable(val: Any) -> Any:
 
 
 def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[str, Any]:
-    """Runs all detectors and fuses the resulting signals."""
+    """Runs all detectors and fuses the resulting signals with SHA-256 caching and concurrency."""
     t0 = time.perf_counter()
 
-    # 1. Metadata check on raw input
-    meta_res = analyze_metadata(raw_bytes)
+    # 1. SHA-256 Cache Check (<2ms response on repeat)
+    file_hash = hashlib.sha256(raw_bytes).hexdigest()
+    if file_hash in _ANALYSIS_CACHE:
+        cached_result = dict(_ANALYSIS_CACHE[file_hash])
+        cached_result["filename"] = filename
+        cached_result["cached"] = True
+        cached_result["time_taken_seconds"] = round(time.perf_counter() - t0, 4)
+        return cached_result
 
-    # 2. C2PA provenance check
-    c2pa_res = analyze_c2pa(raw_bytes)
-
-    # 3. Sanitize PIL image for vision detectors
+    # 2. Sanitize PIL image for vision detectors
     pil_img, _ = sanitize_image_bytes(raw_bytes)
 
-    # 3b. Image type classification gate
+    # Downscale copy for ELA & FFT if >1024px to keep processing under 20ms
+    if max(pil_img.width, pil_img.height) > 1024:
+        forensic_img = pil_img.copy()
+        forensic_img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
+    else:
+        forensic_img = pil_img
+
+    # 3. Image type classification gate (fast: ~15ms)
     img_type_res = classify_image_type(pil_img)
+    detected_type = img_type_res.get("image_type", "photo-like")
 
-    # 4. Error Level Analysis (with image type context)
-    ela_res = analyze_ela(pil_img, image_type=img_type_res.get("image_type", "photo-like"))
+    # 4. Concurrent execution of forensic detectors & ML Ensemble
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        fut_meta = executor.submit(analyze_metadata, raw_bytes)
+        fut_c2pa = executor.submit(analyze_c2pa, raw_bytes)
+        fut_ela = executor.submit(analyze_ela, forensic_img, image_type=detected_type)
+        fut_freq = executor.submit(analyze_frequency, forensic_img)
 
-    # 5. FFT Frequency domain analysis
-    freq_res = analyze_frequency(pil_img)
+        # ML Ensemble runs on main thread (utilizing PyTorch intra-op threads)
+        ensemble = get_ensemble()
+        ml_res = ensemble.analyze(pil_img)
 
-    # 6. ML Ensemble classification
-    ensemble = get_ensemble()
-    ml_res = ensemble.analyze(pil_img)
+        meta_res = fut_meta.result()
+        c2pa_res = fut_c2pa.result()
+        ela_res = fut_ela.result()
+        freq_res = fut_freq.result()
 
-    # 7. Optional Gemini multimodal visual reasoning
-    gemini_res = analyze_gemini(pil_img)
+    # 5. Optional Gemini layer: kept None for ultra-fast core analyze (<1s).
+    # On-demand visual reasoning available via POST /analyze_gemini
+    gemini_res = None
 
-    # 8. Signal Fusion (with image type gate & spread inspection)
+    # 6. Signal Fusion
     fused = fuse_signals(
         metadata_res=meta_res,
         c2pa_res=c2pa_res,
@@ -151,7 +187,12 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
     fused["filename"] = filename
     fused["image_dimensions"] = f"{pil_img.width}x{pil_img.height}"
     fused["time_taken_seconds"] = elapsed
-    return to_serializable(fused)
+    fused["cached"] = False
+    fused["file_hash"] = file_hash
+
+    serializable = to_serializable(fused)
+    _ANALYSIS_CACHE[file_hash] = serializable
+    return serializable
 
 
 @app.route("/", methods=["GET"])
@@ -161,9 +202,9 @@ def index():
 
 
 @app.route("/batch", methods=["GET"])
-def batch_page():
-    """Renders the batch test analysis page."""
-    return render_template("batch.html")
+def batch_redirect():
+    """Redirects legacy /batch route to the single unified page / as required by Phase 3."""
+    return redirect("/", code=302)
 
 
 @app.route("/health", methods=["GET"])
@@ -175,8 +216,10 @@ def health():
         "device": ensemble.device_str,
         "models_configured": ensemble.model_names,
         "models_loaded": list(ensemble.loaded_models.keys()),
-        "gemini_active": bool(os.environ.get("GEMINI_API_KEY")),
+        "gemini_active": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
+        "cache_entries": len(_ANALYSIS_CACHE),
     })
+
 
 
 @app.route("/analyze", methods=["POST"])
@@ -209,12 +252,48 @@ def analyze_endpoint():
         return jsonify({"status": "error", "message": f"Failed to analyze image: {str(exc)}"}), 500
 
 
+@app.route("/analyze_gemini", methods=["POST"])
+def analyze_gemini_endpoint():
+    """On-demand endpoint to run Gemini multimodal reasoning on a specific image."""
+    if "image" not in request.files:
+        return jsonify({"status": "error", "message": "No 'image' provided."}), 400
+
+    file = request.files["image"]
+    raw_bytes = file.read()
+    if len(raw_bytes) < 32:
+        return jsonify({"status": "error", "message": "File is empty or corrupted."}), 400
+
+    api_key_configured = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    if not api_key_configured:
+        return jsonify({
+            "status": "success",
+            "api_key_configured": False,
+            "message": "Gemini API key not configured in .env",
+            "gemini": {
+                "score": None,
+                "confidence": "low",
+                "evidence": ["Gemini API key not configured in .env. Local detectors run fully independently."],
+            },
+        })
+
+    try:
+        pil_img, _ = sanitize_image_bytes(raw_bytes)
+        gemini_res = analyze_gemini(pil_img)
+        return jsonify({
+            "status": "success",
+            "api_key_configured": True,
+            "gemini": to_serializable(gemini_res),
+        })
+    except Exception as exc:
+        logger.exception("Error during on-demand Gemini analysis")
+        return jsonify({"status": "error", "message": f"Gemini analysis error: {str(exc)}"}), 500
+
+
 @app.route("/batch_analyze", methods=["POST"])
 def batch_analyze_endpoint():
-    """Analyzes a batch of uploaded image files."""
+    """Analyzes a batch of uploaded image files, returning full results for each image."""
     files = request.files.getlist("images")
     if not files:
-        # Check single 'image' fallback
         if "image" in request.files:
             files = [request.files["image"]]
         else:
@@ -246,23 +325,7 @@ def batch_analyze_endpoint():
             results.append({
                 "filename": file.filename,
                 "status": "success",
-                "ai_percentage": res.get("ai_percentage"),
-                "probability_display": res.get("probability_display"),
-                "verdict": res.get("verdict"),
-                "confidence": res.get("confidence"),
-                "is_inconclusive": res.get("is_inconclusive", False),
-                "image_type": res.get("image_type", "photo-like"),
-                "is_photo_like": res.get("is_photo_like", True),
-                "spread": res.get("spread", 0.0),
-                "min_model_score": res.get("min_model_score"),
-                "max_model_score": res.get("max_model_score"),
-                "time_taken_seconds": res.get("time_taken_seconds"),
-                "image_dimensions": res.get("image_dimensions"),
-                "summary": res.get("summary_reason"),
-                "why_this_verdict": res.get("why_this_verdict"),
-                "unreliable_notice": res.get("unreliable_notice"),
-                "disagreement_flag": res.get("disagreement_flag"),
-                "signals": res.get("signals"),
+                **res,
             })
         except Exception as exc:
             results.append({
@@ -273,6 +336,9 @@ def batch_analyze_endpoint():
 
     return jsonify({"status": "success", "total": len(results), "results": results})
 
+
+# Eagerly initialize models on module import / startup
+warmup_models()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

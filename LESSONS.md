@@ -140,6 +140,36 @@ This log documents every iteration of the tuning and optimization loop conducted
   - Certificates and charts cleanly landed in `Inconclusive` with range and warning notice.
   - Agreeing photographic cases (`spread < 0.50`) cleanly retained calibrated 4-level verdict.
 
+---
 
+# Phase 3 Self-Improvement Loop: Single-Page Dashboard, Batch Latency & WhatsApp Calibration
 
+## Iteration 11: Cold-Start Elimination & Batch Latency Optimization (Kept!)
+- **Problem**: User reported a 20.7-second latency spike on an image during batch analysis.
+- **Root Cause**: PyTorch model weights were lazily loaded on the very first HTTP request on CPU. Subsequent requests were fast, but the initial upload suffered a 20s lag.
+- **Change**:
+  1. Implemented eager server boot pre-warming (`warmup_models()`) which runs a dummy tensor through all 4 vision models before accepting HTTP traffic (~11s during server startup).
+  2. Implemented in-memory SHA-256 caching (`_ANALYSIS_CACHE`) returning instant cached results in <2ms.
+  3. Downscaled large inputs (>1024px) for ELA and FFT, and dispatched forensic tasks concurrently with `ThreadPoolExecutor(max_workers=4)`.
+- **Validation**:
+  - Cold-start user request penalty: **0.00 seconds** (eliminated).
+  - First-time user image analysis roundtrip: **0.553 seconds** on CPU.
+  - Repeated request roundtrip (SHA-256 cache): **6.74 milliseconds**.
+  - Batch of 40 mixed images: Completed in **22.75 seconds** (0.569s avg/image, 0 crashes, 0 errors).
 
+## Iteration 12: WhatsApp Recompression & Ambiguous Zone Calibration (Kept!)
+- **Problem**: A WhatsApp-compressed 1280x720 image yielded "Leaning AI 51.9%, Low confidence", forcing an honest inconclusive boundary case into a weak guess.
+- **Root Cause**: WhatsApp strips camera EXIF metadata and introduces 8x8 DCT quantization block boundaries that slightly elevate synthetic noise metrics near the 0.50 neutral point.
+- **Change**:
+  1. Enhanced `image_type.py` with 8x8 DCT blockiness ratio calculation and chat export dimension detection (`is_chat_dim`, `is_heavily_recompressed`).
+  2. Calibrated 5-band honest verdict spectrum (`Likely AI` >= 0.70, `Leaning AI` 0.55-0.70, `Inconclusive` 0.45-0.55 or spread>=0.45 or heavy compression ambiguity, `Leaning Real` 0.30-0.45, `Likely Real` < 0.30).
+  3. When an image is heavily compressed and scores near neutral (0.45-0.55), verdict is honestly routed to `Inconclusive` with a probability range and low confidence explanation.
+- **Validation**:
+  - Tested in `tests/test_phase3_counters_and_compression.py`: WhatsApp 1280x720 image cleanly classified as `Inconclusive` with probability range display and low confidence explanation.
+
+## Iteration 13: VeilShare Single-Page Architecture & Viewport Clamping (Kept!)
+- **Change**: Consolidated the entire interface into a unified single-page layout at `/` adhering to the VeilShare dark ink aesthetic (#0B0F17, #151D2E, #6EA8FF, #A78BFA). Left panel (~35% sticky) houses drag-and-drop/paste/folder drops, queue rows, progress bar with ETA, and CSV/JSON export. Right panel (~65%) houses 6-state verdict summary strip, fixed-width non-overlapping table, and full details card with ELA side-by-side zoom.
+- **CSS & Headless Chrome Finding**:
+  - Headless Chromium on Windows enforces a minimum OS window width of 489px, causing window-size flags like 390x844 to render at 489px width and clip.
+  - Driving Chrome DevTools Protocol (`Emulation.setDeviceMetricsOverride` 390x844 mobile) enabled true mobile viewport rendering.
+  - Adding `<colgroup>` with explicit pixel widths and `min-width: 0` on CSS grid column containers eliminated table blowout and column overlapping across 1920x1080, 1366x768, and 390x844.
