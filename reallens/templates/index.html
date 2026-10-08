@@ -3,108 +3,403 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RealLens - Local AI Image Detector & Provenance Forensics</title>
+  <title>RealLens - AI Image Forensics & Provenance Engine</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-  <div class="container">
-    <header>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
       <div class="brand">
-        <h1 class="brand-title">RealLens</h1>
-        <span class="brand-badge">Forensics v0.2</span>
+        <div class="brand-logo">🔍</div>
+        <div>
+          <h1 class="brand-title">RealLens</h1>
+          <div class="brand-tagline">Multi-Signal Provenance & Forensic AI Detection</div>
+        </div>
+        <span class="brand-badge">Phase 2.5</span>
       </div>
-      <div style="display: flex; gap: 12px; align-items: center;">
-        <a href="/batch" class="nav-badge" style="color: #60A5FA; text-decoration: none; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 6px; background: rgba(96, 165, 250, 0.1); border: 1px solid rgba(96, 165, 250, 0.3);">Batch Test Page 📁</a>
-        <div id="device-status" class="device-indicator">
+
+      <div class="header-actions">
+        <a href="/batch" class="nav-link">Batch Test Suite 📁</a>
+        <div id="device-status" class="device-pill">
           Device: Checking...
         </div>
       </div>
     </header>
 
+    <!-- Honesty & Provenance Disclaimer -->
     <div class="disclaimer-banner">
-      <span style="font-size: 16px;">⚠️</span>
-      <div>
-        <strong>Estimate only, not proof.</strong>
-        Probability combines multi-layer signals (metadata, ELA, Fourier spectra, and vision models). Missing metadata or lack of watermarks is neutral and never proves an image is real.
+      <div class="disclaimer-icon">⚠️</div>
+      <div class="disclaimer-text">
+        <strong>Probability estimate only, not forensic proof.</strong>
+        Synthesizes metadata, C2PA Content Credentials, ELA compression forensics, FFT spectral decay, and deep vision ensembles. Missing metadata is neutral and never proves authenticity. Photo-trained detectors are unreliable on flat digital graphics and screenshots.
       </div>
     </div>
 
-    <main class="layout-grid">
-      <!-- Left Column: Input Card -->
-      <section class="card">
-        <h2 class="card-title">Upload Image</h2>
-        
-        <div id="dropzone" class="dropzone">
-          <div class="dropzone-icon">📷</div>
-          <div class="dropzone-text"><strong>Click to browse</strong> or drag & drop</div>
-          <div class="dropzone-subtext">JPEG, PNG, WEBP, GIF (Max 25MB)</div>
-          <input type="file" id="file-input" accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff">
+    <!-- Two-Panel Main Layout -->
+    <div class="two-panel-layout">
+      <!-- LEFT PANEL: Upload, Queue, Table & Summary -->
+      <section class="panel-left">
+        <!-- Upload Dropzone -->
+        <div class="card upload-card">
+          <div id="dropzone" class="dropzone">
+            <div class="dropzone-icon">📥</div>
+            <div class="dropzone-main-text">
+              <strong>Click to upload</strong>, drag & drop multiple files, or paste from clipboard
+            </div>
+            <div class="dropzone-sub-text">
+              Accepts up to 50 images (JPEG, PNG, WEBP, GIF, BMP, TIFF) • Max 25MB each
+            </div>
+            <input type="file" id="file-input" multiple accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff">
+          </div>
+
+          <!-- Queue Control Actions -->
+          <div class="queue-actions-bar" id="queue-actions-bar" style="display: none;">
+            <div class="queue-info">
+              <span id="queue-count-badge" class="badge-neutral">0 images</span>
+              <span id="queue-cache-info" class="cache-indicator">⚡ SHA-256 caching active</span>
+            </div>
+            <div class="queue-buttons">
+              <button id="analyze-all-btn" class="btn btn-primary btn-sm">▶ Analyze All</button>
+              <button id="cancel-btn" class="btn btn-secondary btn-sm" style="display: none;">⏹ Cancel</button>
+              <button id="clear-all-btn" class="btn btn-ghost btn-sm">🗑 Clear</button>
+            </div>
+          </div>
+
+          <!-- Live Progress Bar -->
+          <div id="progress-container" class="progress-container" style="display: none;">
+            <div class="progress-labels">
+              <span id="progress-text" class="progress-text">Analyzing 1 of 5...</span>
+              <span id="progress-eta" class="progress-eta">Est. remaining: calculating...</span>
+            </div>
+            <div class="progress-track">
+              <div id="progress-fill" class="progress-fill" style="width: 0%;"></div>
+            </div>
+          </div>
         </div>
 
-        <div id="preview-container" class="preview-container">
-          <img id="preview-image" class="preview-img" alt="Selected Preview">
-          <button id="analyze-btn" class="btn">Analyze Image</button>
+        <!-- Summary Strip (Filter counts) -->
+        <div id="summary-strip" class="summary-strip" style="display: none;">
+          <div class="summary-pill active" data-filter="all">
+            <span class="pill-label">All</span>
+            <span id="count-all" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-likely-ai" data-filter="Likely AI">
+            <span class="pill-label">Likely AI</span>
+            <span id="count-likely-ai" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-leaning-ai" data-filter="Leaning AI">
+            <span class="pill-label">Leaning AI</span>
+            <span id="count-leaning-ai" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-inconclusive" data-filter="Inconclusive">
+            <span class="pill-label">Inconclusive</span>
+            <span id="count-inconclusive" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-leaning-real" data-filter="Leaning real">
+            <span class="pill-label">Leaning real</span>
+            <span id="count-leaning-real" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-likely-real" data-filter="Likely real">
+            <span class="pill-label">Likely real</span>
+            <span id="count-likely-real" class="pill-count">0</span>
+          </div>
+          <div class="summary-pill pill-failed" data-filter="Failed">
+            <span class="pill-label">Failed</span>
+            <span id="count-failed" class="pill-count">0</span>
+          </div>
         </div>
 
-        <div id="loading-box" class="loading-box">
-          <div class="spinner"></div>
-          <div id="loading-text">Running multi-signal forensic analysis...</div>
-        </div>
+        <!-- Queue & Results Table Card -->
+        <div class="card table-card">
+          <div class="table-header-row">
+            <h3 class="panel-subtitle">Analysis Queue & Results</h3>
+            <div class="table-shortcuts-hint">
+              <span>Tip: Use <kbd>↑</kbd> <kbd>↓</kbd> arrow keys to navigate</span>
+            </div>
+          </div>
 
-        <div id="error-box" class="error-box"></div>
+          <div class="table-scroll-container">
+            <table class="results-table" id="results-table">
+              <thead>
+                <tr>
+                  <th style="width: 48px;">Img</th>
+                  <th class="sortable" data-sort="filename">File Name <span class="sort-icon">⇅</span></th>
+                  <th class="sortable" data-sort="type">Type <span class="sort-icon">⇅</span></th>
+                  <th class="sortable" data-sort="verdict">Verdict <span class="sort-icon">⇅</span></th>
+                  <th class="sortable" data-sort="probability">Score / Range <span class="sort-icon">⇅</span></th>
+                  <th class="sortable" data-sort="spread">Spread <span class="sort-icon">⇅</span></th>
+                  <th class="sortable" data-sort="time">Time <span class="sort-icon">⇅</span></th>
+                  <th style="width: 40px;"></th>
+                </tr>
+              </thead>
+              <tbody id="queue-tbody">
+                <tr class="empty-row">
+                  <td colspan="8">No images in queue. Upload or drag images above.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Export Bar -->
+          <div id="export-bar" class="export-bar" style="display: none;">
+            <div class="export-label">Export Results:</div>
+            <div class="export-buttons">
+              <button id="download-csv-btn" class="btn btn-secondary btn-xs">📥 Download CSV</button>
+              <button id="download-json-btn" class="btn btn-secondary btn-xs">📥 Download JSON</button>
+              <button id="copy-report-btn" class="btn btn-secondary btn-xs">📋 Copy Report</button>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- Right Column: Results Card -->
-      <section id="results-card" class="card results-container">
-        <!-- Verdict Banner -->
-        <div id="verdict-banner" class="verdict-banner">
-          <div class="verdict-info">
-            <h2 id="verdict-title" class="verdict-title">Verdict</h2>
-            <p id="verdict-summary" class="verdict-subtitle">Analyzing signals...</p>
-            <div id="time-badge" style="font-size: 12px; color: #94A3B8; margin-top: 6px; font-family: monospace;"></div>
+      <!-- RIGHT PANEL: Detailed View for Selected Image -->
+      <section class="panel-right">
+        <div class="card detail-card" id="detail-card">
+          <!-- State 1: Empty placeholder -->
+          <div id="detail-empty" class="detail-empty-state">
+            <div class="empty-icon">🖼️</div>
+            <div class="empty-title">No Image Selected</div>
+            <div class="empty-sub">Upload an image or select one from the queue on the left to inspect its multi-layer forensic breakdown.</div>
           </div>
-          <div id="verdict-score" class="verdict-badge">0.0%</div>
-        </div>
 
-        <!-- Vision Models Bar List -->
-        <div class="card" style="margin-bottom: 16px; background: #0E1420; border-color: #1F293D; padding: 14px;">
-          <h4 style="margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #94A3B8;">Individual Model Predictions</h4>
-          <div id="model-bars-container" style="display: flex; flex-direction: column; gap: 8px;">
-            <!-- Rendered by JS -->
+          <!-- State 2: Skeleton loader -->
+          <div id="detail-skeleton" class="detail-skeleton" style="display: none;">
+            <div class="skeleton-shimmer skeleton-title"></div>
+            <div class="skeleton-shimmer skeleton-badge"></div>
+            <div class="skeleton-shimmer skeleton-box"></div>
+            <div class="skeleton-shimmer skeleton-bars"></div>
+          </div>
+
+          <!-- State 3: Active Details -->
+          <div id="detail-content" class="detail-content" style="display: none;">
+            <!-- Header bar: File Info -->
+            <div class="detail-header-meta">
+              <div>
+                <h2 id="detail-filename" class="detail-filename">filename.jpg</h2>
+                <div class="detail-sub-meta">
+                  <span id="detail-dims" class="meta-item">1920x1080</span>
+                  <span id="detail-size" class="meta-item">1.2 MB</span>
+                  <span id="detail-type-badge" class="meta-item type-badge">photo-like</span>
+                  <span id="detail-time" class="meta-item time-badge">0.42s</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Image-Type Warning Notice (conditionally shown for non-photos) -->
+            <div id="unreliable-type-notice" class="unreliable-notice-box" style="display: none;">
+              <span class="notice-icon">⚠️</span>
+              <div class="notice-content">
+                <strong>Non-Photographic Image Detected</strong>
+                <p id="unreliable-notice-text">
+                  This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type.
+                </p>
+              </div>
+            </div>
+
+            <!-- Verdict Card -->
+            <div id="verdict-banner" class="verdict-banner">
+              <div class="verdict-main">
+                <div class="verdict-tag-row">
+                  <span id="verdict-badge" class="verdict-badge verdict-inconclusive">Inconclusive</span>
+                  <span id="verdict-confidence-badge" class="confidence-pill conf-low">Low Confidence</span>
+                </div>
+                <div id="verdict-display-score" class="verdict-display-score">between 0% and 100% across models</div>
+                <p id="verdict-one-liner" class="verdict-one-liner">Analyzing signals...</p>
+              </div>
+            </div>
+
+            <!-- "Why this verdict?" Explanation Box -->
+            <div class="why-verdict-box">
+              <div class="why-verdict-header">
+                <span class="why-icon">💡</span>
+                <strong>Why this verdict?</strong>
+              </div>
+              <p id="why-verdict-text" class="why-verdict-text">
+                Signals will appear here upon completion.
+              </p>
+            </div>
+
+            <!-- Model Spread & Individual Progress Bars -->
+            <div class="detail-section">
+              <div class="section-title-row">
+                <h4 class="section-title">Individual Model Predictions & Spread</h4>
+                <div id="spread-indicator-pill" class="spread-indicator">Spread: 0.0%</div>
+              </div>
+
+              <!-- Visual Spread Range Bar -->
+              <div class="spread-bar-container">
+                <div class="spread-bar-track">
+                  <div id="spread-bar-fill" class="spread-bar-fill" style="left: 0%; width: 0%;"></div>
+                </div>
+                <div class="spread-bar-labels">
+                  <span>0% (Real)</span>
+                  <span id="spread-range-label" style="color: var(--accent);">Range</span>
+                  <span>100% (AI)</span>
+                </div>
+              </div>
+
+              <!-- List of Individual Model Progress Bars -->
+              <div id="model-bars-container" class="model-bars-container">
+                <!-- Rendered dynamically by JS -->
+              </div>
+            </div>
+
+            <!-- Forensic Visual Comparison (Original vs ELA) -->
+            <div class="detail-section">
+              <div class="section-title-row">
+                <h4 class="section-title">Visual Forensics: Error Level Analysis (ELA)</h4>
+                <div class="ela-controls">
+                  <button id="ela-toggle-btn" class="btn btn-secondary btn-xs">🔄 Toggle ELA / Original</button>
+                  <button id="zoom-img-btn" class="btn btn-ghost btn-xs">🔍 Zoom</button>
+                </div>
+              </div>
+
+              <!-- Comparison View -->
+              <div class="ela-view-container">
+                <div id="ela-single-view" class="ela-single-frame">
+                  <img id="ela-active-img" class="ela-display-img" alt="Forensic View">
+                  <div id="ela-view-caption" class="ela-caption-badge">Original Image</div>
+                </div>
+
+                <div id="ela-side-by-side" class="ela-dual-frame" style="display: none;">
+                  <div class="ela-half-box">
+                    <div class="frame-sublabel">Original Input</div>
+                    <img id="comp-original" class="ela-display-img" alt="Original">
+                  </div>
+                  <div class="ela-half-box">
+                    <div class="frame-sublabel">ELA Recompression Heatmap</div>
+                    <img id="comp-ela" class="ela-display-img" alt="ELA Heatmap">
+                  </div>
+                </div>
+              </div>
+              <div id="ela-interpretation-note" class="ela-note">
+                ELA reveals compression artifacts and resaved manipulation edges.
+              </div>
+            </div>
+
+            <!-- Collapsible Multi-Signal Accordion -->
+            <div class="detail-section">
+              <h4 class="section-title" style="margin-bottom: 12px;">Detailed Multi-Signal Forensics</h4>
+              <div class="signal-accordion" id="signal-accordion">
+                <!-- 1. Provenance / C2PA Credentials -->
+                <div class="accordion-item" id="acc-c2pa">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-c2pa')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">🔏</span>
+                      <span class="acc-name">C2PA Content Credentials</span>
+                      <span id="badge-c2pa" class="acc-pill">N/A</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="c2pa-details" class="acc-text">Checking cryptographic manifests...</div>
+                    <div class="acc-limitation">⚠️ Limitation: Missing C2PA credentials is common for web images and never proves an image is real.</div>
+                  </div>
+                </div>
+
+                <!-- 2. File Metadata & AI Traces -->
+                <div class="accordion-item" id="acc-meta">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-meta')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">📋</span>
+                      <span class="acc-name">Metadata & Software Traces</span>
+                      <span id="badge-meta" class="acc-pill">N/A</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="meta-details" class="acc-text">Parsing EXIF, XMP, and PNG text chunks...</div>
+                    <div class="acc-limitation">⚠️ Limitation: Metadata is easily stripped by social networks or screenshot tools.</div>
+                  </div>
+                </div>
+
+                <!-- 3. Error Level Analysis (ELA) -->
+                <div class="accordion-item" id="acc-ela">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-ela')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">🔬</span>
+                      <span class="acc-name">Error Level Analysis (ELA)</span>
+                      <span id="badge-ela" class="acc-pill">N/A</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="ela-details" class="acc-text">Measuring re-quantization difference variance...</div>
+                    <div class="acc-limitation">⚠️ Limitation: ELA is only valid for photographic JPEG imagery; flat graphics naturally show high uniform variance.</div>
+                  </div>
+                </div>
+
+                <!-- 4. FFT Frequency Decomposition -->
+                <div class="accordion-item" id="acc-fft">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-fft')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">📊</span>
+                      <span class="acc-name">FFT Spectral Frequency</span>
+                      <span id="badge-fft" class="acc-pill">N/A</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="fft-details" class="acc-text">Analyzing radial power spectra and periodic upsampling peaks...</div>
+                    <div class="acc-limitation">⚠️ Limitation: Downsampling, sharpening, and aggressive recompression alter high-frequency slopes.</div>
+                  </div>
+                </div>
+
+                <!-- 5. Machine Learning Vision Ensemble -->
+                <div class="accordion-item" id="acc-ml">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-ml')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">🧠</span>
+                      <span class="acc-name">Deep Vision Ensemble & DINOv2 Probe</span>
+                      <span id="badge-ml" class="acc-pill">N/A</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="ml-details" class="acc-text">Evaluating 4 distinct vision classifiers...</div>
+                    <div class="acc-limitation">⚠️ Limitation: Models trained on specific generator distributions often fail on unseen generators or graphic textures.</div>
+                  </div>
+                </div>
+
+                <!-- 6. Gemini Multimodal Layer -->
+                <div class="accordion-item" id="acc-gemini">
+                  <div class="accordion-header" onclick="toggleAccordion('acc-gemini')">
+                    <div class="acc-title-left">
+                      <span class="acc-icon">✨</span>
+                      <span class="acc-name">Gemini Visual Reasoning Layer</span>
+                      <span id="badge-gemini" class="acc-pill">Optional</span>
+                    </div>
+                    <span class="acc-arrow">▼</span>
+                  </div>
+                  <div class="accordion-body">
+                    <div id="gemini-details" class="acc-text">Gemini reasoning status...</div>
+                    <div class="acc-limitation">⚠️ Note: Requires GEMINI_API_KEY in .env. Runs completely local without it.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-
-        <!-- Visual Comparison: Original vs ELA Heatmap -->
-        <div class="comparison-grid">
-          <div class="comparison-box">
-            <div class="comparison-label">ORIGINAL INPUT</div>
-            <img id="comp-original" class="comparison-img" alt="Original">
-          </div>
-          <div class="comparison-box">
-            <div class="comparison-label">ERROR LEVEL ANALYSIS (ELA)</div>
-            <img id="comp-ela" class="comparison-img" alt="ELA Heatmap">
-          </div>
-        </div>
-
-        <!-- Signal Breakdown Table -->
-        <h3 class="card-title" style="margin-top: 16px;">Signal Forensic Breakdown</h3>
-        <table class="signal-table">
-          <thead>
-            <tr>
-              <th>Detector Signal</th>
-              <th>Score</th>
-              <th>Evidence & Findings</th>
-            </tr>
-          </thead>
-          <tbody id="signal-tbody">
-            <!-- Populated via JavaScript -->
-          </tbody>
-        </table>
       </section>
-    </main>
+    </div>
 
-    <footer>
-      RealLens Forensic Engine • Privacy-Preserving Local Inference • All computation runs locally
+    <!-- Zoom Modal -->
+    <div id="zoom-modal" class="zoom-modal" onclick="closeZoomModal()">
+      <div class="zoom-modal-content" onclick="event.stopPropagation()">
+        <div class="zoom-header">
+          <span id="zoom-title">Forensic Inspection View</span>
+          <button class="zoom-close-btn" onclick="closeZoomModal()">✕</button>
+        </div>
+        <div class="zoom-img-container">
+          <img id="zoom-modal-img" src="" alt="Full Resolution Inspection">
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      RealLens Forensic Engine • Privacy-Preserving Local Inference • Phase 2.5 Architecture
     </footer>
   </div>
 

@@ -18,29 +18,30 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 ## Architecture Overview
 
 ```
-                              Uploaded Image
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        ▼                           ▼                           ▼
-  1. Provenance               2. Compression              3. 4-Model Deep
-  & Metadata                  & Spectral                  Vision Ensemble
-  ─────────────────────────   ─────────────────────────   ─────────────────────────
-  • EXIF Camera Hardware      • Error Level Analysis      • ViT CIFAKE (dima806)
-  • PNG Generation Chunks       (Q=90 Heatmap + Stats)    • ViT SDXL (Organika)
-  • C2PA Manifest Reader      • 2D FFT Hann Window        • SigLIP (Ateeqq)
-  • Missing = Neutral           Spectral Slope Decay      • DINOv2 Probe (Ours)
-        │                           │                           │
-        └───────────────────────────┼───────────────────────────┘
-                                    ▼
-                      4. Learned Signal Stacker & Fusion
-                      ──────────────────────────────────
-                      • Calibrated Logistic Regression Stacker
-                      • Dynamic Fallback to Hand-Weighted Fusion
-                      • Hard Cryptographic Provenance Overrides
-                      • Explicit Uncertain Zone Guardrail [35%-65%]
-                                    │
-                                    ▼
-                   Verdict, Probability, Bar List & Heatmap
+                               Uploaded Image
+                                     │
+        ┌────────────────────────────┼────────────────────────────┐
+        ▼                            ▼                            ▼
+  1. Image-Type Gate           2. Provenance & Forensics    3. 4-Model Deep
+  ─────────────────────────    ─────────────────────────    Vision Ensemble
+  • Flat Patch Ratio           • EXIF Camera Hardware       • ViT CIFAKE (dima806)
+  • White Paper Dominance      • PNG Generation Chunks      • ViT SDXL (Organika)
+  • Color Palette Entropy      • C2PA Manifest Reader       • SigLIP (Ateeqq)
+  • Non-Photo Warning Notice   • ELA Compression Variance   • DINOv2 Probe (Ours)
+  • Routes to Inconclusive     • 2D FFT Hann Spectral Decay • Spread (Max - Min)
+        │                            │                            │
+        └────────────────────────────┼────────────────────────────┘
+                                     ▼
+                       4. Signal Fusion & Guardrails
+                       ─────────────────────────────────────────
+                       • Disagreement Guardrail (Spread >= 50% -> Inconclusive)
+                       • Suppresses Single % -> Probability Range Display
+                       • Learned Logistic Regression Stacker on Agreement
+                       • 4-Level Consensus Spectrum / Inconclusive Notice
+                                     │
+                                     ▼
+                    Two-Panel Multi-Image Batch Queue Interface
+                    (CSV/JSON/Report Export, ELA Zoom, Model Bars)
 ```
 
 ---
@@ -150,6 +151,12 @@ python evaluation/run_eval.py --split hard_test
 # Evaluate Held-Out Easy Test Set (75 Real, 75 AI)
 python evaluation/run_eval.py --split test
 
+# Evaluate Held-Out Hard Test Set (Midjourney AI + WhatsApp Real)
+python evaluation/run_eval.py --split hard_test
+
+# Evaluate Non-AI Graphics (Certificates, Charts, Slides, Web Dashboards)
+python evaluation/run_eval.py --split graphics
+
 # Compare All 4 Models on the Hard Tuning Set
 python evaluation/compare_models_hard.py
 
@@ -157,7 +164,13 @@ python evaluation/compare_models_hard.py
 python evaluation/run_eval.py --split user
 ```
 
-### 5. Run Transformation Robustness Suite
+### 5. Run Live 30-Image Test Suite
+Tests 30 mixed images (photos, hard AI, graphics, certificates, edge cases) on localhost:
+```bash
+python tests/test_phase2_5_live.py
+```
+
+### 6. Run Transformation Robustness Suite
 Tests JPEG recompression (Q=85, 65, 45, 30), resizing (0.75x, 0.50x), screenshotting, and Gaussian blur:
 ```bash
 python evaluation/robustness.py --split tuning --samples 12

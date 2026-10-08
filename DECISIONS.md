@@ -39,3 +39,15 @@ This document tracks all design decisions made during the development of RealLen
 - **Decision**: Batch Testing Mode implemented with native CSV export (`/batch`).
   - *Reason*: Allows users to process multi-image folders locally and download forensic evaluation logs with execution latency and signal breakdowns.
 
+## 5. Phase 2.5 Architectural Decisions: Image-Type Gating, Spread Inspection & Inconclusive Routing
+- **Decision**: Image-Type Gate (`reallens/detectors/image_type.py`) added prior to ML and forensics.
+  - *Reason*: Vision detectors trained on photographic scenes suffer a 63.3% false-positive rate on certificates, slides, and screenshots because vector text glyphs, uniform flat fills, and missing sensor noise mimic synthetic diffusion artifacts.
+- **Decision**: Automatic Routing to `Inconclusive` with probability range for non-photographic imagery.
+  - *Reason*: Missing camera metadata and absence of watermarks never prove an image is AI-generated; warning the user that photo-trained detectors are unreliable on flat graphics prevents confident false accusations.
+- **Decision**: Disagreement Guardrail (`spread >= 0.50`) enforces `Inconclusive` and replaces single percentage with a transparent probability range (`between X% and Y% across models`).
+  - *Reason*: When model predictions conflict violently (e.g. 2% vs 100%), forcing an average or maximum score creates a deceptive illusion of certainty; exposing the spread and range respects user trust.
+- **Decision**: ELA Text Guardrail in `reallens/detectors/ela.py`.
+  - *Reason*: ELA is physically meaningful only for photographic continuous-tone JPEG imagery; non-photographic graphics report that ELA is not meaningful.
+- **Decision**: Multi-Image Client-Side Batch Queue with Sequential Execution.
+  - *Reason*: Sequential asynchronous queue prevents local CPU starvation from concurrent PyTorch inference runs while client-side SHA-256 caching eliminates duplicate re-analysis.
+

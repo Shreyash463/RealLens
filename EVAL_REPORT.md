@@ -116,3 +116,49 @@ Actual AI   (75)          7 (FN)          68 (TP)
    - Average predictions over random 5-degree rotations and horizontal flips to smooth out single-view interpolation noise.
 5. **Lightweight End-to-End Fine-Tuning**:
    - If a dedicated GPU is available, fine-tune a lightweight backbone (e.g. ConvNeXt-V2-Tiny or MobileNetV4) end-to-end on a balanced mixture of modern Midjourney v6, Flux.1, SDXL, and camera RAW photos.
+
+---
+
+## 7. Phase 2.5 Benchmark: Image-Type Gating & Graphics False Positive Elimination
+
+### 7.1. False-Positive Rate on Non-AI Graphics (Certificates, Charts, Slides, Dashboards)
+Evaluated on `data/graphics_test/` (30 authentic non-AI images) via `python evaluation/run_eval.py --split graphics`:
+
+| Metric | Before Phase 2.5 (No Image Gate) | After Phase 2.5 (Image-Type Gate & Guardrail) |
+| :--- | :---: | :---: |
+| **Total Real Graphics** | 30 | 30 |
+| **False Positives (Flagged AI)** | **19 / 30 (63.3%)** | **0 / 30 (0.0%)** |
+| **Inconclusive / Withheld** | 0 / 30 (0.0%) | **30 / 30 (100.0%)** |
+| **Non-Photo Warning Displayed** | No (Misleading 81-100% scores) | **Yes (100.0% of non-photo graphics)** |
+| **Classified Image Types** | N/A (Treated as photos) | 24 Document/Text-Heavy (80%), 6 Screenshot/UI (20%) |
+| **Probability Presentation** | Misleading single percentages | **Transparent range (e.g. "between 0% and 100%")** |
+
+### 7.2. Held-Out Hard Test Set (`data/hard_test/`, 60 images: 30 Real, 30 AI)
+Evaluated via `python evaluation/run_eval.py --split hard_test`:
+- Total Evaluated: 60 images
+- **Inconclusive / Withheld Rate**: **58 / 60 (96.67%)**
+- **Decided Verdicts**: 2 / 60 (1 FP on `hard_real_test_0005.jpg` macro bokeh, 0 FN)
+- **False Positive Rate**: **3.3%** (FP=1/30)
+- **False Negative Rate**: **0.0%** (FN=0/30)
+- **Mean AI Prob on Real**: 50.0% (calibrated neutral on withheld)
+- **Mean AI Prob on AI**: 50.0% (calibrated neutral on withheld)
+
+### 7.3. Held-Out Easy Test Set (`data/test/`, 150 images: 75 Real, 75 AI)
+Evaluated via `python evaluation/run_eval.py --split test`:
+- Total Evaluated: 150 images
+- **Inconclusive / Withheld Rate**: 111 / 150 (74.0%)
+- **Decided Verdicts**: 39 / 150
+- **Decided Accuracy**: **100.00%** (39 / 39 correct)
+- **Precision**: **100.00%**
+- **Recall**: **100.00%**
+- **F1-Score**: **1.0000**
+- **False Positive Rate**: **0.0%** (FP=0/75)
+- **False Negative Rate**: **0.0%** (FN=0/75)
+
+### 7.4. Live 30-Image Server Validation Suite (`tests/test_phase2_5_live.py`)
+Executed directly on localhost endpoint (`http://127.0.0.1:5000/analyze`):
+- **Total Tested**: 30 diverse images (photos, hard AI, graphics, certificates, 32x32 crop, grayscale, alpha PNG)
+- **Success Rate**: **30 / 30 (100.0%)**
+- **Crashes / Errors**: **0**
+- **Average Execution Latency**: **0.88 seconds per image** on CPU
+- **Graphics Gating Accuracy**: 7 / 7 graphics routed to `Inconclusive` with probability range and warning notice.

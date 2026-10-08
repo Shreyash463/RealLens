@@ -114,6 +114,32 @@ This log documents every iteration of the tuning and optimization loop conducted
   - Held-Out Hard Test Set: **86.67% Accuracy, 86.67% AI Recall, 86.67% Precision, 0.8667 F1** (Catching 26 of 30 hard Midjourney AI images and correctly classifying 4 of 5 WhatsApp camera photos).
 - **Action**: Retained as primary fusion engine with graceful fallback to hand-weighted rules and 96.7% uncertain-zone flagging on heavily distorted samples.
 
+---
+
+# Phase 2.5 Self-Improvement Loop: Image-Type Gating & Non-Photo False Positive Elimination
+
+## Iteration 8: Diagnosis of Real Graphics / Certificate False Positives
+- **Problem**: A screenshot of an authentic certificate was tested by the user. `dima806` gave 2%, `sdxl-detector` gave 99.5%, `Ateeqq` gave 100%, and the system misleadingly reported "Uncertain leaning AI, 81%".
+- **Root Cause**: Deep vision models (`sdxl-detector`, `Ateeqq`) trained exclusively on natural scene photography interpret uniform flat color patches, absence of camera sensor grain, and sharp digital font rasterization as latent diffusion synthetic smoothing.
+- **Empirical Baseline on Graphics Test Set (30 non-AI certificates, slides, charts, dashboards)**:
+  - Old System False Positives: **19 / 30 (63.3%)** falsely classified as AI!
+
+## Iteration 9: Deterministic Image-Type Gate (`image_type.py`) & ELA Guardrail (Kept!)
+- **Change**: Added deterministic feature extractor measuring flat patch fraction, white paper luminance (>240), unique color code entropy, axis-aligned edge sharpness, and non-flat Laplacian noise floor. Automatically routes non-photographic inputs to `Inconclusive`, downweights ML and forensics, suppresses misleading ELA natural photo claims, and triggers an explicit warning notice:
+  *"This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."*
+- **Results on Graphics Test Set (30 images)**:
+  - Classified as: 24 `document/text-heavy` (80.0%), 6 `screenshot/UI` (20.0%), 0 `photo-like`.
+  - False Positive Rate: Plunged from **63.3% down to 0.0%** (0 out of 30 flagged AI)!
+  - Inconclusive / Withheld: **30 / 30 (100.0%)**.
+  - Photographic Natural Images: 100% correctly maintained as `photo-like`.
+
+## Iteration 10: Model Spread Inspection & Disagreement Guardrail (Kept!)
+- **Change**: Expose `spread` (max - min) as a first-class metric. When `spread >= 0.50`, headline is forced to `Inconclusive` and single percentage is replaced by a probability range (`between X% and Y% across models`).
+- **Live Test Validation on 30 Mixed Images**:
+  - 100% pass rate (30/30), 0 crashes, average latency 0.88s/image on CPU.
+  - Certificates and charts cleanly landed in `Inconclusive` with range and warning notice.
+  - Agreeing photographic cases (`spread < 0.50`) cleanly retained calibrated 4-level verdict.
+
 
 
 

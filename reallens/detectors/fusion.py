@@ -1,11 +1,9 @@
 """Signal Fusion engine for RealLens.
 
 Combines provenance (C2PA, EXIF/PNG metadata), physical/compression forensics
-(ELA, FFT frequency analysis), and deep learning vision models (ML ensemble,
-optional Gemini layer) into a calibrated probability and transparent verdict.
-
-Supports both Learned Calibrated Stacker (primary) and Hand-Weighted Fusion (fallback),
-along with a designated 'Uncertain' zone guardrail.
+(ELA, FFT frequency analysis), deep learning vision models (ML ensemble,
+optional Gemini layer), and deterministic image-type gating into a calibrated
+probability or range and transparent verdict.
 """
 from __future__ import annotations
 
@@ -45,28 +43,19 @@ def fuse_signals(
     freq_res: Dict[str, Any],
     ml_res: Dict[str, Any],
     gemini_res: Optional[Dict[str, Any]] = None,
+    image_type_res: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Combines all detector signals into one calibrated probability and verdict.
+    """Combines all detector signals into a calibrated verdict and probability or range.
 
     Honesty and safety rules:
     - Verified C2PA manifest or explicit AI metadata trace is strong evidence for AI.
-    - Camera hardware EXIF is a mild signal toward real, never absolute proof.
-    - Missing metadata is neutral, not suspicious.
-    - ELA and FFT frequency analysis are supporting signals with modest weights.
-    - High ML ensemble disagreement forces the verdict into 'Uncertain'.
-    - Output is always a probability estimate with evidence, never 100% certainty.
-
-    Returns:
-        dict:
-            ai_probability: float (0.0 to 1.0)
-            ai_percentage: float (0.0 to 100.0)
-            verdict: "Likely AI" | "Uncertain leaning AI" | "Uncertain leaning real" | "Likely real"
-            confidence: "low" | "medium" | "high"
-            summary_reason: str
-            signals: dict of all individual detector outputs
-            disagreement_flag: bool
-            in_uncertain_zone: bool
-            fusion_mode: "learned_stacker" | "hand_weighted_fallback"
+    - If image type is NOT photo-like (screenshot, document, certificate, graphic):
+      lower ML/forensics weights and push verdict to 'Inconclusive' unless hard C2PA/AI metadata exists.
+    - When ML models disagree strongly (spread >= 0.50), headline must be 'Inconclusive'
+      and percentage must be replaced by a probability RANGE (e.g. 'between 2% and 100% across models').
+    - Only show single percentage when models roughly agree.
+    - 5-level verdict spectrum:
+      'Likely AI' | 'Leaning AI' | 'Inconclusive' | 'Leaning real' | 'Likely real'
     """
     signals: Dict[str, Any] = {
         "metadata": metadata_res,
@@ -75,7 +64,13 @@ def fuse_signals(
         "frequency": freq_res,
         "ml_ensemble": ml_res,
         "gemini": gemini_res or {"score": None, "confidence": "low", "evidence": ["Disabled"]},
+        "image_type": image_type_res or {"image_type": "photo-like", "is_photo_like": True},
     }
+
+    img_type_info = image_type_res or {"image_type": "photo-like", "is_photo_like": True, "unreliable_notice": None}
+    img_type = img_type_info.get("image_type", "photo-like")
+    is_photo_like = img_type_info.get("is_photo_like", True)
+    unreliable_notice = img_type_info.get("unreliable_notice")
 
     # 1. Hard Provenance Overrides
     # A) Verified C2PA with AI action
@@ -83,13 +78,21 @@ def fuse_signals(
         prob = 0.985
         return {
             "ai_probability": prob,
-            "ai_percentage": round(prob * 100, 1),
+            "ai_percentage": 98.5,
+            "probability_display": "98.5%",
             "verdict": "Likely AI",
             "confidence": "high",
+            "is_inconclusive": False,
             "summary_reason": "Cryptographically authenticated C2PA Content Credentials manifest records generative AI origin.",
+            "why_this_verdict": "Cryptographic Content Credentials (C2PA) attached to this file explicitly record generative AI synthesis. Provenance signatures cannot be forged without invalidating the cryptographic certificate.",
             "signals": signals,
+            "spread": 0.0,
+            "min_model_score": prob,
+            "max_model_score": prob,
+            "image_type": img_type,
+            "is_photo_like": is_photo_like,
+            "unreliable_notice": None,
             "disagreement_flag": False,
-            "in_uncertain_zone": False,
             "fusion_mode": "cryptographic_override",
             "honesty_note": "Estimate based on authenticated provenance. Missing metadata never proves authenticity.",
         }
@@ -99,13 +102,21 @@ def fuse_signals(
         prob = 0.970
         return {
             "ai_probability": prob,
-            "ai_percentage": round(prob * 100, 1),
+            "ai_percentage": 97.0,
+            "probability_display": "97.0%",
             "verdict": "Likely AI",
             "confidence": "high",
+            "is_inconclusive": False,
             "summary_reason": "Unambiguous AI generator parameters (prompt/sampler/model headers) detected in image metadata.",
+            "why_this_verdict": "Raw file metadata contains explicit generative parameters (such as diffusion prompt text, checkpoint hashes, or generation headers) confirming synthetic generation.",
             "signals": signals,
+            "spread": 0.0,
+            "min_model_score": prob,
+            "max_model_score": prob,
+            "image_type": img_type,
+            "is_photo_like": is_photo_like,
+            "unreliable_notice": None,
             "disagreement_flag": False,
-            "in_uncertain_zone": False,
             "fusion_mode": "metadata_override",
             "honesty_note": "Estimate based on file metadata. Missing metadata never proves authenticity.",
         }
@@ -115,27 +126,105 @@ def fuse_signals(
         prob = 0.05
         return {
             "ai_probability": prob,
-            "ai_percentage": round(prob * 100, 1),
+            "ai_percentage": 5.0,
+            "probability_display": "5.0%",
             "verdict": "Likely real",
             "confidence": "high",
+            "is_inconclusive": False,
             "summary_reason": "Cryptographic camera hardware signing (C2PA) confirms authentic capture origin.",
+            "why_this_verdict": "Hardware-level cryptographic signing confirms the image was captured directly by a certified camera sensor with an intact signature chain.",
             "signals": signals,
+            "spread": 0.0,
+            "min_model_score": prob,
+            "max_model_score": prob,
+            "image_type": img_type,
+            "is_photo_like": is_photo_like,
+            "unreliable_notice": None,
             "disagreement_flag": False,
-            "in_uncertain_zone": False,
             "fusion_mode": "cryptographic_override",
             "honesty_note": "Estimate based on cryptographic signature.",
         }
 
-    # 2. Check for ML Disagreement
+    # 2. Extract ML Ensemble Scores & Spread
     ml_score = ml_res.get("score")
-    ml_disagreement = False
     per_model_scores = ml_res.get("per_model_scores", {})
     valid_scores = [v for v in per_model_scores.values() if v is not None]
-    spread = float(max(valid_scores) - min(valid_scores)) if len(valid_scores) >= 2 else 0.0
-    if len(valid_scores) >= 2 and spread > 0.45:
-        ml_disagreement = True
 
-    # 3. Fusion Prediction (Learned Stacker vs Hand-Weighted Fallback)
+    if valid_scores:
+        min_score = float(min(valid_scores))
+        max_score = float(max(valid_scores))
+        spread = float(max_score - min_score)
+    else:
+        min_score = 0.50
+        max_score = 0.50
+        spread = 0.0
+
+    min_pct = round(min_score * 100, 1)
+    max_pct = round(max_score * 100, 1)
+    range_display = f"between {min_pct:.0f}% and {max_pct:.0f}% across models"
+
+    # ML Disagreement condition
+    ml_disagreement = (spread >= 0.50)
+
+    # 3. Handle Non-Photographic Images (Image-Type Gate)
+    if not is_photo_like:
+        notice_text = unreliable_notice or (
+            "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."
+        )
+        return {
+            "ai_probability": 0.50,
+            "ai_percentage": None,  # Suppress single percentage
+            "probability_display": range_display if spread >= 0.20 else f"~{min_pct:.0f}%",
+            "verdict": "Inconclusive",
+            "confidence": "low",
+            "is_inconclusive": True,
+            "summary_reason": f"{notice_text} Classified as '{img_type}'.",
+            "why_this_verdict": (
+                f"This image was identified as a {img_type} (uniform background fills, sharp text glyphs, or window boundaries). "
+                f"Deep vision detectors trained on natural camera photographs frequently misinterpret flat digital graphics and sharp text rendering as generative diffusion artifacts. "
+                f"Without cryptographic C2PA credentials or metadata traces, a definitive AI determination cannot be made."
+            ),
+            "signals": signals,
+            "spread": round(spread, 3),
+            "min_model_score": round(min_score, 3),
+            "max_model_score": round(max_score, 3),
+            "image_type": img_type,
+            "is_photo_like": False,
+            "unreliable_notice": notice_text,
+            "disagreement_flag": ml_disagreement,
+            "fusion_mode": "image_type_gate",
+            "honesty_note": "Photo-trained vision detectors are unreliable for flat digital graphics, documents, and screenshots.",
+        }
+
+    # 4. Handle Strong ML Disagreement on Photo-Like Images
+    if ml_disagreement:
+        return {
+            "ai_probability": 0.50,
+            "ai_percentage": None,  # Suppress single percentage!
+            "probability_display": range_display,
+            "verdict": "Inconclusive",
+            "confidence": "low",
+            "is_inconclusive": True,
+            "summary_reason": f"Machine learning detectors disagree strongly (spread: {spread*100:.0f}%). One or more vision models may be producing false alarms.",
+            "why_this_verdict": (
+                f"Vision classifiers disagree substantially on this image (spread: {spread*100:.0f}%). "
+                f"Individual model predictions range from {min_pct:.1f}% to {max_pct:.1f}% AI probability. "
+                f"This sharp conflict typically arises from compression macroblocks, heavy aperture bokeh, or out-of-distribution textures. "
+                f"Because the models cannot reach consensus, the system flags the result as Inconclusive rather than forcing a misleading single score."
+            ),
+            "signals": signals,
+            "spread": round(spread, 3),
+            "min_model_score": round(min_score, 3),
+            "max_model_score": round(max_score, 3),
+            "image_type": img_type,
+            "is_photo_like": True,
+            "unreliable_notice": None,
+            "disagreement_flag": True,
+            "fusion_mode": "disagreement_guardrail",
+            "honesty_note": "Estimate withheld due to severe detector disagreement. Manual inspection recommended.",
+        }
+
+    # 5. Agreement Case: Calibrated Single Probability
     stacker = get_learned_stacker()
     fused_prob = None
     fusion_mode = "hand_weighted_fallback"
@@ -169,9 +258,8 @@ def fuse_signals(
             fused_prob = None
 
     if fused_prob is None:
-        # Hand-Weighted Fallback
-        weights: Dict[str, float] = {"ml": 0.70}
-        values: Dict[str, float] = {"ml": float(ml_score) if ml_score is not None else 0.50}
+        weights = {"ml": 0.70}
+        values = {"ml": float(ml_score) if ml_score is not None else 0.50}
 
         meta_score = metadata_res.get("score")
         if meta_score is not None:
@@ -196,49 +284,48 @@ def fuse_signals(
         fused_prob = sum(values[k] * weights[k] for k in weights) / total_weight if total_weight > 0 else 0.50
         fusion_mode = "hand_weighted_fallback"
 
-    # Clamp probability to honest boundaries (avoid 0.00 or 1.00 claims without cryptographic proof)
     fused_prob = max(0.04, min(0.96, fused_prob))
+    pct = round(fused_prob * 100, 1)
 
-    # 4. Determine Verdict Bands & Uncertain Zone
-    in_uncertain_zone = (0.35 <= fused_prob <= 0.65) or ml_disagreement
-
-    if ml_disagreement:
-        if fused_prob >= 0.50:
-            verdict = "Uncertain leaning AI"
-        else:
-            verdict = "Uncertain leaning real"
+    # 4-Level Verdict Spectrum for Agreeing Cases
+    if fused_prob >= 0.65:
+        verdict = "Likely AI"
+        confidence = "high" if fused_prob >= 0.85 else "medium"
+        summary = "Consistent AI visual characteristics and artifact patterns identified across detectors."
+        why_text = "Vision models demonstrate strong agreement on synthetic diffusion textures, supported by spectral frequency patterns consistent with generative upsampling."
+    elif fused_prob >= 0.50:
+        verdict = "Leaning AI"
         confidence = "low"
-        summary = (
-            f"Machine learning detectors disagree substantially (spread: {spread:.2f}). "
-            f"The system recommends manual inspection."
-        )
+        summary = "Subtle generative cues observed, but overall confidence is moderate."
+        why_text = "Detector consensus leans slightly toward AI synthesis, but lack of cryptographic provenance and compression noise prevents a definitive determination."
+    elif fused_prob >= 0.35:
+        verdict = "Leaning real"
+        confidence = "low"
+        summary = "Primarily natural characteristics, though compression leaves slight ambiguity."
+        why_text = "Image exhibits photographic characteristics and natural spectral decay, though compression re-encoding leaves minor residual uncertainty."
     else:
-        if fused_prob >= 0.65:
-            verdict = "Likely AI"
-            confidence = "high" if fused_prob >= 0.85 else "medium"
-            summary = "Consistent AI visual characteristics and artifact patterns identified across detectors."
-        elif fused_prob >= 0.50:
-            verdict = "Uncertain leaning AI"
-            confidence = "low"
-            summary = "Subtle generative cues observed, but insufficient confidence for definitive AI determination."
-        elif fused_prob >= 0.35:
-            verdict = "Uncertain leaning real"
-            confidence = "low"
-            summary = "Primarily natural characteristics, though compression or lack of hardware provenance leaves ambiguity."
-        else:
-            verdict = "Likely real"
-            confidence = "high" if fused_prob <= 0.18 else "medium"
-            summary = "Photographic noise characteristics, natural spectral decay, and vision models align with authentic origin."
+        verdict = "Likely real"
+        confidence = "high" if fused_prob <= 0.18 else "medium"
+        summary = "Photographic sensor noise characteristics, natural spectral decay, and vision models align with authentic origin."
+        why_text = "All active vision models agree on authentic photographic origin. Natural camera sensor noise floor, Fourier spectral slope, and compression characteristics align with real-world capture."
 
     return {
         "ai_probability": round(fused_prob, 3),
-        "ai_percentage": round(fused_prob * 100, 1),
+        "ai_percentage": pct,
+        "probability_display": f"{pct}%",
         "verdict": verdict,
         "confidence": confidence,
+        "is_inconclusive": False,
         "summary_reason": summary,
+        "why_this_verdict": why_text,
         "signals": signals,
-        "disagreement_flag": ml_disagreement,
-        "in_uncertain_zone": in_uncertain_zone,
+        "spread": round(spread, 3),
+        "min_model_score": round(min_score, 3),
+        "max_model_score": round(max_score, 3),
+        "image_type": img_type,
+        "is_photo_like": True,
+        "unreliable_notice": None,
+        "disagreement_flag": False,
         "fusion_mode": fusion_mode,
         "honesty_note": "Estimate only, not proof. Missing metadata never proves an image is real.",
     }

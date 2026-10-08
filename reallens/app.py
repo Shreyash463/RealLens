@@ -28,6 +28,7 @@ from reallens.detectors.ela import analyze_ela
 from reallens.detectors.frequency import analyze_frequency
 from reallens.detectors.fusion import fuse_signals
 from reallens.detectors.gemini_layer import analyze_gemini
+from reallens.detectors.image_type import classify_image_type
 from reallens.detectors.metadata import analyze_metadata
 from reallens.detectors.ml_ensemble import MLEnsemble
 
@@ -90,6 +91,22 @@ def sanitize_image_bytes(raw_bytes: bytes) -> tuple[Image.Image, bytes]:
     return clean_img, raw_bytes
 
 
+def to_serializable(val: Any) -> Any:
+    """Recursively converts numpy scalars and non-standard types to JSON-serializable Python types."""
+    if isinstance(val, dict):
+        return {str(k): to_serializable(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [to_serializable(v) for v in val]
+    if hasattr(val, "item") and callable(getattr(val, "item")):
+        try:
+            return val.item()
+        except Exception:
+            pass
+    if isinstance(val, (float, int, str, bool)) or val is None:
+        return val
+    return str(val)
+
+
 def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[str, Any]:
     """Runs all detectors and fuses the resulting signals."""
     t0 = time.perf_counter()
@@ -103,8 +120,11 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
     # 3. Sanitize PIL image for vision detectors
     pil_img, _ = sanitize_image_bytes(raw_bytes)
 
-    # 4. Error Level Analysis
-    ela_res = analyze_ela(pil_img)
+    # 3b. Image type classification gate
+    img_type_res = classify_image_type(pil_img)
+
+    # 4. Error Level Analysis (with image type context)
+    ela_res = analyze_ela(pil_img, image_type=img_type_res.get("image_type", "photo-like"))
 
     # 5. FFT Frequency domain analysis
     freq_res = analyze_frequency(pil_img)
@@ -116,7 +136,7 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
     # 7. Optional Gemini multimodal visual reasoning
     gemini_res = analyze_gemini(pil_img)
 
-    # 8. Signal Fusion
+    # 8. Signal Fusion (with image type gate & spread inspection)
     fused = fuse_signals(
         metadata_res=meta_res,
         c2pa_res=c2pa_res,
@@ -124,13 +144,14 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
         freq_res=freq_res,
         ml_res=ml_res,
         gemini_res=gemini_res,
+        image_type_res=img_type_res,
     )
 
     elapsed = round(time.perf_counter() - t0, 3)
     fused["filename"] = filename
     fused["image_dimensions"] = f"{pil_img.width}x{pil_img.height}"
     fused["time_taken_seconds"] = elapsed
-    return fused
+    return to_serializable(fused)
 
 
 @app.route("/", methods=["GET"])
@@ -226,13 +247,22 @@ def batch_analyze_endpoint():
                 "filename": file.filename,
                 "status": "success",
                 "ai_percentage": res.get("ai_percentage"),
+                "probability_display": res.get("probability_display"),
                 "verdict": res.get("verdict"),
                 "confidence": res.get("confidence"),
+                "is_inconclusive": res.get("is_inconclusive", False),
+                "image_type": res.get("image_type", "photo-like"),
+                "is_photo_like": res.get("is_photo_like", True),
+                "spread": res.get("spread", 0.0),
+                "min_model_score": res.get("min_model_score"),
+                "max_model_score": res.get("max_model_score"),
                 "time_taken_seconds": res.get("time_taken_seconds"),
                 "image_dimensions": res.get("image_dimensions"),
                 "summary": res.get("summary_reason"),
+                "why_this_verdict": res.get("why_this_verdict"),
+                "unreliable_notice": res.get("unreliable_notice"),
                 "disagreement_flag": res.get("disagreement_flag"),
-                "in_uncertain_zone": res.get("in_uncertain_zone"),
+                "signals": res.get("signals"),
             })
         except Exception as exc:
             results.append({

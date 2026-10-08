@@ -18,6 +18,7 @@ def analyze_ela(
     image_source: Union[str, Path, bytes, Image.Image],
     quality: int = 90,
     scale: int = 15,
+    image_type: str = "photo-like",
 ) -> Dict[str, Any]:
     """Computes Error Level Analysis (ELA) metrics and heatmap.
 
@@ -25,6 +26,7 @@ def analyze_ela(
         image_source: Path, bytes, or PIL Image.
         quality: JPEG compression quality level (default 90).
         scale: Multiplier to amplify subtle compression differences.
+        image_type: Detected image category ("photo-like", "screenshot/UI", etc.).
 
     Returns:
         dict:
@@ -119,12 +121,14 @@ def analyze_ela(
             "high_error_ratio": round(high_error_ratio, 4),
         }
 
-        # Calibration for AI detection:
-        # Authentic camera JPEGs have already reached compression equilibrium (mean_error typically 2.0-5.5).
-        # Uncompressed AI generations or fresh diffusion outputs usually exhibit much higher first-generation
-        # compression error (mean_error often 7.0-18.0) and high standard deviation.
-        # ELA is a supporting signal, so score is bounded and marked with appropriate confidence.
-        if mean_error > 9.5:
+        # If image is non-photographic (e.g. screenshot, document, graphic), ELA is not meaningful
+        if image_type != "photo-like":
+            score = 0.50
+            confidence = "low"
+            evidence.append(
+                f"Image classified as '{image_type}'. Error Level Analysis is not meaningful for non-photographic, flat graphics or screenshots."
+            )
+        elif mean_error > 9.5:
             score = min(0.85, 0.5 + (mean_error - 9.5) * 0.035)
             evidence.append(
                 f"Elevated ELA mean error ({mean_error:.2f}) indicates image has not undergone standard camera JPEG compression equilibrium."

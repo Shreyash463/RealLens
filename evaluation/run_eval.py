@@ -38,18 +38,32 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
             raw_bytes = p.read_bytes()
             res = analyze_image_bytes(raw_bytes, filename=p.name)
             prob = res.get("ai_probability", 0.5)
-            pred_label = 1 if prob >= threshold else 0
+            verdict = res.get("verdict", "")
+            is_inconclusive = res.get("is_inconclusive", False) or (verdict == "Inconclusive")
+
+            # Prediction mapping:
+            # - Definite/Leaning AI -> 1
+            # - Definite/Leaning Real -> 0
+            # - Inconclusive / Withheld -> -1
+            if verdict in ("Likely AI", "Leaning AI"):
+                pred_label = 1
+            elif verdict in ("Likely real", "Leaning real"):
+                pred_label = 0
+            else:
+                pred_label = -1
+
             results.append({
                 "path": str(p),
                 "filename": p.name,
                 "ground_truth": ground_truth_label,
                 "predicted_label": pred_label,
                 "ai_probability": prob,
-                "verdict": res.get("verdict"),
+                "verdict": verdict,
+                "is_inconclusive": is_inconclusive,
                 "confidence": res.get("confidence"),
                 "summary": res.get("summary_reason"),
                 "signals": res.get("signals"),
-                "in_uncertain_zone": res.get("in_uncertain_zone", False),
+                "in_uncertain_zone": is_inconclusive or res.get("in_uncertain_zone", False),
                 "is_correct": (pred_label == ground_truth_label),
             })
         except Exception as exc:
@@ -57,9 +71,10 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
                 "path": str(p),
                 "filename": p.name,
                 "ground_truth": ground_truth_label,
-                "predicted_label": -1,
+                "predicted_label": -2,
                 "ai_probability": 0.5,
                 "verdict": "Error",
+                "is_inconclusive": True,
                 "confidence": "low",
                 "summary": f"Evaluation error: {exc}",
                 "signals": {},
@@ -70,46 +85,63 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
 
 
 def calculate_metrics(eval_records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Computes binary classification metrics."""
-    valid_records = [r for r in eval_records if r["ground_truth"] in (0, 1) and r["predicted_label"] in (0, 1)]
-    if not valid_records:
-        return {"total": 0, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0, "uncertain_pct": 0.0}
+    """Computes honest classification metrics including inconclusive routing."""
+    total = len(eval_records)
+    if total == 0:
+        return {"total": 0, "accuracy": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0, "fp_rate": 0.0}
 
-    tp = sum(1 for r in valid_records if r["ground_truth"] == 1 and r["predicted_label"] == 1)
-    tn = sum(1 for r in valid_records if r["ground_truth"] == 0 and r["predicted_label"] == 0)
-    fp = sum(1 for r in valid_records if r["ground_truth"] == 0 and r["predicted_label"] == 1)
-    fn = sum(1 for r in valid_records if r["ground_truth"] == 1 and r["predicted_label"] == 0)
+    total_real = sum(1 for r in eval_records if r["ground_truth"] == 0)
+    total_ai = sum(1 for r in eval_records if r["ground_truth"] == 1)
 
-    total = len(valid_records)
-    acc = (tp + tn) / total if total > 0 else 0.0
+    inconclusive_count = sum(1 for r in eval_records if r.get("is_inconclusive", False) or r["predicted_label"] == -1)
+    inconclusive_pct = (inconclusive_count / total * 100) if total > 0 else 0.0
+
+    # False positives: Ground truth is Real (0), but predicted as AI (1)
+    fp = sum(1 for r in eval_records if r["ground_truth"] == 0 and r["predicted_label"] == 1)
+    fp_rate = (fp / total_real * 100) if total_real > 0 else 0.0
+
+    # False negatives: Ground truth is AI (1), but predicted as Real (0)
+    fn = sum(1 for r in eval_records if r["ground_truth"] == 1 and r["predicted_label"] == 0)
+    fn_rate = (fn / total_ai * 100) if total_ai > 0 else 0.0
+
+    # Decided records (where system issued a definitive AI or Real verdict)
+    decided_records = [r for r in eval_records if r["predicted_label"] in (0, 1)]
+    tp = sum(1 for r in decided_records if r["ground_truth"] == 1 and r["predicted_label"] == 1)
+    tn = sum(1 for r in decided_records if r["ground_truth"] == 0 and r["predicted_label"] == 0)
+
+    decided_total = len(decided_records)
+    decided_acc = (tp + tn) / decided_total if decided_total > 0 else 0.0
     prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     f1 = (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
 
-    real_probs = [r["ai_probability"] for r in valid_records if r["ground_truth"] == 0]
-    ai_probs = [r["ai_probability"] for r in valid_records if r["ground_truth"] == 1]
+    real_probs = [r["ai_probability"] for r in eval_records if r["ground_truth"] == 0]
+    ai_probs = [r["ai_probability"] for r in eval_records if r["ground_truth"] == 1]
 
     mean_real_prob = float(sum(real_probs) / len(real_probs)) if real_probs else 0.0
     mean_ai_prob = float(sum(ai_probs) / len(ai_probs)) if ai_probs else 0.0
 
-    errors = [r for r in valid_records if not r["is_correct"]]
-    uncertain_count = sum(1 for r in valid_records if r.get("in_uncertain_zone", False) or "Uncertain" in r.get("verdict", ""))
-    uncertain_pct = (uncertain_count / total * 100) if total > 0 else 0.0
+    errors = [r for r in decided_records if not r["is_correct"]]
 
     return {
         "total": total,
+        "total_real": total_real,
+        "total_ai": total_ai,
+        "decided_total": decided_total,
+        "decided_accuracy": round(decided_acc, 4),
         "tp": tp,
         "tn": tn,
         "fp": fp,
         "fn": fn,
-        "accuracy": round(acc, 4),
+        "fp_rate": round(fp_rate, 2),
+        "fn_rate": round(fn_rate, 2),
         "precision": round(prec, 4),
         "recall": round(rec, 4),
         "f1": round(f1, 4),
         "mean_real_prob": round(mean_real_prob, 4),
         "mean_ai_prob": round(mean_ai_prob, 4),
-        "uncertain_count": uncertain_count,
-        "uncertain_pct": round(uncertain_pct, 2),
+        "inconclusive_count": inconclusive_count,
+        "inconclusive_pct": round(inconclusive_pct, 2),
         "error_count": len(errors),
         "errors": errors,
     }
@@ -134,6 +166,9 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
     elif split == "user":
         real_dir = data_dir / "my_images" / "real"
         ai_dir = data_dir / "my_images" / "ai"
+    elif split == "graphics":
+        real_dir = data_dir / "graphics_test"
+        ai_dir = None
     elif split == "messy":
         real_dir = data_dir / "messy_real"
         ai_dir = data_dir / "test" / "ai"
@@ -147,21 +182,32 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
     print(f"AI dir:   {ai_dir}")
 
     real_records = evaluate_directory(real_dir, ground_truth_label=0, threshold=threshold)
-    ai_records = evaluate_directory(ai_dir, ground_truth_label=1, threshold=threshold)
+    user_graphics = data_dir / "my_images" / "real_graphics"
+    if split == "graphics" and user_graphics.exists():
+        user_gfx_records = evaluate_directory(user_graphics, ground_truth_label=0, threshold=threshold)
+        if user_gfx_records:
+            print(f"Included {len(user_gfx_records)} custom user images from {user_graphics}")
+            real_records.extend(user_gfx_records)
+
+    ai_records = evaluate_directory(ai_dir, ground_truth_label=1, threshold=threshold) if ai_dir and ai_dir.exists() else []
     all_records = real_records + ai_records
 
     metrics = calculate_metrics(all_records)
 
     print("\n--- PERFORMANCE METRICS ---")
-    print(f"Total Evaluated: {metrics['total']} images")
-    print(f"Accuracy:        {metrics['accuracy'] * 100:.2f}%")
-    print(f"Precision:       {metrics['precision'] * 100:.2f}%")
-    print(f"Recall:          {metrics['recall'] * 100:.2f}%")
-    print(f"F1-Score:        {metrics['f1']:.4f}")
-    print(f"Confusion Matrix: TP={metrics['tp']}, TN={metrics['tn']}, FP={metrics['fp']}, FN={metrics['fn']}")
-    print(f"Mean AI Prob on Real Images: {metrics['mean_real_prob'] * 100:.1f}%")
-    print(f"Mean AI Prob on AI Images:   {metrics['mean_ai_prob'] * 100:.1f}%")
-    print(f"Uncertain Zone Landings:     {metrics['uncertain_count']}/{metrics['total']} ({metrics['uncertain_pct']:.1f}%)")
+    print(f"Total Evaluated:        {metrics['total']} images (Real: {metrics['total_real']}, AI: {metrics['total_ai']})")
+    print(f"Inconclusive / Withheld:{metrics['inconclusive_count']}/{metrics['total']} ({metrics['inconclusive_pct']}%)")
+    print(f"Decided Verdicts:       {metrics['decided_total']}/{metrics['total']}")
+    if metrics['decided_total'] > 0:
+        print(f"Decided Accuracy:       {metrics['decided_accuracy'] * 100:.2f}%")
+        print(f"Precision:              {metrics['precision'] * 100:.2f}%")
+        print(f"Recall:                 {metrics['recall'] * 100:.2f}%")
+        print(f"F1-Score:               {metrics['f1']:.4f}")
+    print(f"False Positive Rate:    {metrics['fp_rate']:.1f}% (FP={metrics['fp']}/{metrics['total_real']})")
+    print(f"False Negative Rate:    {metrics['fn_rate']:.1f}% (FN={metrics['fn']}/{metrics['total_ai']})")
+    print(f"Mean AI Prob on Real:   {metrics['mean_real_prob'] * 100:.1f}%")
+    print(f"Mean AI Prob on AI:     {metrics['mean_ai_prob'] * 100:.1f}%")
+    print(f"Inconclusive / Withheld Landings: {metrics['inconclusive_count']}/{metrics['total']} ({metrics['inconclusive_pct']:.1f}%)")
 
     if metrics["errors"]:
         print(f"\n--- ERROR BREAKDOWN ({len(metrics['errors'])} misclassifications) ---")
@@ -180,7 +226,7 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", choices=["tuning", "test", "hard_tuning", "hard_test", "user", "messy"], default="tuning")
+    parser.add_argument("--split", choices=["tuning", "test", "hard_tuning", "hard_test", "user", "messy", "graphics"], default="tuning")
     parser.add_argument("--threshold", type=float, default=0.50)
     args = parser.parse_args()
 
