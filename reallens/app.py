@@ -26,13 +26,17 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from reallens.detectors.c2pa_check import analyze_c2pa
+from reallens.detectors.condition import detect_image_condition
 from reallens.detectors.ela import analyze_ela
 from reallens.detectors.frequency import analyze_frequency
-from reallens.detectors.fusion import fuse_signals, get_learned_stacker
+from reallens.detectors.fusion import fuse_signals
 from reallens.detectors.gemini_layer import analyze_gemini
+from reallens.detectors.gemini_semantic import analyze_gemini_semantic
 from reallens.detectors.image_type import classify_image_type
 from reallens.detectors.metadata import analyze_metadata
 from reallens.detectors.ml_ensemble import MLEnsemble
+from reallens.detectors.screenshot_cropper import detect_and_crop_screenshot
+from reallens.detectors.watermarks import detect_watermarks
 
 # Configure logging
 logging.basicConfig(
@@ -74,8 +78,6 @@ def warmup_models() -> None:
         ens = get_ensemble()
         dummy_img = Image.new("RGB", (224, 224), (128, 128, 128))
         _ = ens.analyze(dummy_img)
-        _ = classify_image_type(dummy_img)
-        get_learned_stacker()
         dur = round(time.perf_counter() - t_start, 2)
         logger.info(f"Model warmup completed in {dur}s. Pipeline ready for instant inference.")
     except Exception as exc:
@@ -127,7 +129,7 @@ def to_serializable(val: Any) -> Any:
     return str(val)
 
 
-PIPELINE_VERSION = "v1.0.0"
+PIPELINE_VERSION = "v5.0.0"
 
 
 def _clean_stale_cache():
@@ -163,38 +165,57 @@ def _process_image_full(raw_bytes: bytes, filename: str, ignore_cache: bool = Fa
     # 2. Sanitize PIL image for vision detectors
     pil_img, _ = sanitize_image_bytes(raw_bytes)
 
+    # 2b. Screenshot / Letterbox Cropper (prevents UI frames from corrupting pixel models)
+    crop_info = detect_and_crop_screenshot(pil_img)
+    vision_img = crop_info["cropped_image"] if crop_info.get("auto_cropped") else pil_img
+
     # Downscale copy for ELA & FFT if >1024px to keep processing fast
-    if max(pil_img.width, pil_img.height) > 1024:
-        forensic_img = pil_img.copy()
+    if max(vision_img.width, vision_img.height) > 1024:
+        forensic_img = vision_img.copy()
         forensic_img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
     else:
-        forensic_img = pil_img
+        forensic_img = vision_img
 
     # 3. Learned image type classification gate (fast: ~15ms)
-    img_type_res = classify_image_type(pil_img)
+    img_type_res = classify_image_type(vision_img)
     detected_type = img_type_res.get("image_type", "photo-like")
 
     # 4. Concurrent execution of forensic detectors & ML Ensemble
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         fut_meta = executor.submit(analyze_metadata, raw_bytes)
         fut_c2pa = executor.submit(analyze_c2pa, raw_bytes)
         fut_ela = executor.submit(analyze_ela, forensic_img, image_type=detected_type)
         fut_freq = executor.submit(analyze_frequency, forensic_img, image_type=detected_type)
+        fut_watermark = executor.submit(detect_watermarks, vision_img)
 
         # ML Ensemble runs on main thread (utilizing PyTorch intra-op threads)
         ensemble = get_ensemble()
-        ml_res = ensemble.analyze(pil_img)
+        ml_res = ensemble.analyze(vision_img)
 
         meta_res = fut_meta.result()
         c2pa_res = fut_c2pa.result()
         ela_res = fut_ela.result()
         freq_res = fut_freq.result()
+        watermark_res = fut_watermark.result()
 
-    # 5. Optional Gemini layer: kept None for ultra-fast core analyze (<1s).
-    # On-demand visual reasoning available via POST /analyze_gemini
+    # 5. Image Condition Detection (WhatsApp, Screenshot, JPEG recompressed, Original)
+    condition_res = detect_image_condition(
+        pil_img,
+        filename=filename,
+        metadata_res=meta_res,
+        crop_info=crop_info,
+        image_type_res=img_type_res,
+    )
+
+    # 6. Gemini semantic analysis (checked persistently via data/gemini_semantic_cache.json)
     gemini_res = None
+    if os.environ.get("GEMINI_API_KEY", "").strip():
+        try:
+            gemini_res = analyze_gemini_semantic(vision_img)
+        except Exception as exc:
+            logger.warning(f"Gemini semantic analysis failed: {exc}")
 
-    # 6. Signal Fusion
+    # 7. Signal Fusion
     fused = fuse_signals(
         metadata_res=meta_res,
         c2pa_res=c2pa_res,
@@ -203,16 +224,37 @@ def _process_image_full(raw_bytes: bytes, filename: str, ignore_cache: bool = Fa
         ml_res=ml_res,
         gemini_res=gemini_res,
         image_type_res=img_type_res,
+        watermark_res=watermark_res,
+        condition_res=condition_res,
+        crop_info=crop_info,
     )
 
     elapsed = round(time.perf_counter() - t0, 3)
     fused["filename"] = filename
     fused["image_dimensions"] = f"{pil_img.width}x{pil_img.height}"
+    if crop_info.get("auto_cropped"):
+        fused["cropped_dimensions"] = f"{vision_img.width}x{vision_img.height}"
     fused["time_taken_seconds"] = elapsed
     fused["original_time_taken_seconds"] = elapsed
     fused["cached"] = False
     fused["file_hash"] = file_hash
     fused["pipeline_version"] = PIPELINE_VERSION
+
+    # Aliases for UI backwards compatibility & convenience
+    fused["image_type"] = img_type_res.get("image_type", "photo-like")
+    fused["photo_probability"] = img_type_res.get("photo_probability", 1.0)
+    fused["is_photo_like"] = img_type_res.get("is_photo_like", True)
+    fused["ai_probability"] = fused["probability"]
+    fused["ai_percentage"] = round(fused["probability"] * 100, 1)
+    fused["min_model_score"] = fused.get("min_score", fused["probability"])
+    fused["max_model_score"] = fused.get("max_score", fused["probability"])
+    fused["summary_reason"] = fused["summary"]
+    fused["evidence_pointing_to_ai"] = fused["evidence_ai"]
+    fused["evidence_pointing_to_real"] = fused["evidence_real"]
+    fused["missing_or_unreliable_evidence"] = fused["evidence_unreliable"]
+    fused["probability_display"] = f"{fused['ai_percentage']:.1f}%"
+    fused["per_model_scores"] = fused["model_scores"]
+    fused["per_model_weights"] = fused["model_weights"]
 
     serializable = to_serializable(fused)
     _ANALYSIS_CACHE[cache_key] = serializable
@@ -308,7 +350,7 @@ def analyze_gemini_endpoint():
 
     try:
         pil_img, _ = sanitize_image_bytes(raw_bytes)
-        gemini_res = analyze_gemini(pil_img)
+        gemini_res = analyze_gemini_semantic(pil_img, force_refresh=True)
         return jsonify({
             "status": "success",
             "api_key_configured": True,

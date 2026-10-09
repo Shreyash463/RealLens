@@ -50,6 +50,9 @@
     detailDimensions: document.getElementById('detail-dimensions'),
     detailSize: document.getElementById('detail-size'),
     detailImageType: document.getElementById('detail-image-type'),
+    detailCondition: document.getElementById('detail-condition'),
+    detailAutocrop: document.getElementById('detail-autocrop'),
+    detailWatermark: document.getElementById('detail-watermark'),
     detailDuration: document.getElementById('detail-duration'),
     detailCached: document.getElementById('detail-cached'),
     autoAnalyzeToggle: document.getElementById('auto-analyze-toggle'),
@@ -67,6 +70,9 @@
     verdictSummaryLine: document.getElementById('verdict-summary-line'),
     verdictNoticesRow: document.getElementById('verdict-notices-row'),
     noticeChipType: document.getElementById('notice-chip-type'),
+    noticeChipCondition: document.getElementById('notice-chip-condition'),
+    noticeChipAutocrop: document.getElementById('notice-chip-autocrop'),
+    noticeChipWatermark: document.getElementById('notice-chip-watermark'),
     noticeChipCompression: document.getElementById('notice-chip-compression'),
     noticeChipRange: document.getElementById('notice-chip-range'),
     whyVerdictContent: document.getElementById('why-verdict-content'),
@@ -106,8 +112,10 @@
     geminiDetailsBody: document.getElementById('gemini-details-body'),
     geminiResultCard: document.getElementById('gemini-result-card'),
     geminiCardBadge: document.getElementById('gemini-card-badge'),
-    geminiPromptBox: document.getElementById('gemini-prompt-box'),
-    geminiObservationsList: document.getElementById('gemini-observations-list'),
+    geminiFindingsList: document.getElementById('gemini-findings-list'),
+    geminiCounterList: document.getElementById('gemini-counter-list'),
+    geminiFindingsSection: document.getElementById('gemini-findings-section'),
+    geminiCounterSection: document.getElementById('gemini-counter-section'),
     zoomModal: document.getElementById('zoom-modal'),
     zoomModalImage: document.getElementById('zoom-modal-image'),
     zoomModalTitle: document.getElementById('zoom-modal-title'),
@@ -479,11 +487,11 @@
   function normalizeVerdict(v) {
     if (!v) return 'Failed';
     const s = String(v).trim().toLowerCase();
-    if (s === 'likely ai') return 'Likely AI';
+    if (s.includes('strong') || s === 'likely ai' || s.includes('ai evidence found')) return 'AI evidence found (strong)';
     if (s === 'leaning ai') return 'Leaning AI';
     if (s.includes('inconclusive')) return 'Inconclusive';
-    if (s === 'leaning real') return 'Leaning Real';
-    if (s === 'likely real') return 'Likely Real';
+    if (s.includes('no ai evidence') || s === 'leaning real') return 'No AI evidence found (not proof of real)';
+    if (s === 'likely real') return 'Likely real';
     if (s === 'failed') return 'Failed';
     return 'Inconclusive';
   }
@@ -491,11 +499,11 @@
   function updateSummaryStrip() {
     const counts = {
       all: state.results.length,
-      'Likely AI': 0,
+      'AI evidence found (strong)': 0,
       'Leaning AI': 0,
       'Inconclusive': 0,
-      'Leaning Real': 0,
-      'Likely Real': 0,
+      'No AI evidence found (not proof of real)': 0,
+      'Likely real': 0,
       'Failed': 0,
     };
 
@@ -508,13 +516,13 @@
       }
     });
 
-    document.getElementById('count-all').textContent = counts.all;
-    document.getElementById('count-likely-ai').textContent = counts['Likely AI'];
-    document.getElementById('count-leaning-ai').textContent = counts['Leaning AI'];
-    document.getElementById('count-inconclusive').textContent = counts['Inconclusive'];
-    document.getElementById('count-leaning-real').textContent = counts['Leaning Real'];
-    document.getElementById('count-likely-real').textContent = counts['Likely Real'];
-    document.getElementById('count-failed').textContent = counts['Failed'];
+    if (document.getElementById('count-all')) document.getElementById('count-all').textContent = counts.all;
+    if (document.getElementById('count-strong-ai')) document.getElementById('count-strong-ai').textContent = counts['AI evidence found (strong)'];
+    if (document.getElementById('count-leaning-ai')) document.getElementById('count-leaning-ai').textContent = counts['Leaning AI'];
+    if (document.getElementById('count-inconclusive')) document.getElementById('count-inconclusive').textContent = counts['Inconclusive'];
+    if (document.getElementById('count-no-evidence')) document.getElementById('count-no-evidence').textContent = counts['No AI evidence found (not proof of real)'];
+    if (document.getElementById('count-likely-real')) document.getElementById('count-likely-real').textContent = counts['Likely real'];
+    if (document.getElementById('count-failed')) document.getElementById('count-failed').textContent = counts['Failed'];
 
     // Update filter pills active status
     const pills = el.summaryStrip.querySelectorAll('.summary-pill');
@@ -736,9 +744,33 @@
 
     // 1. File Metadata Header
     el.detailFilename.textContent = r.filename || item?.name || 'image.jpg';
-    el.detailDimensions.textContent = r.image_dimensions || 'N/A';
+    const dimText = r.cropped_dimensions ? `${r.image_dimensions} (cropped: ${r.cropped_dimensions})` : (r.image_dimensions || 'N/A');
+    el.detailDimensions.textContent = dimText;
     el.detailSize.textContent = item ? formatBytes(item.size) : 'N/A';
     el.detailImageType.textContent = r.image_type || 'photo-like';
+
+    if (el.detailCondition) {
+      el.detailCondition.textContent = r.condition_label ? `Condition: ${r.condition_label}` : 'Condition: Standard';
+    }
+
+    if (r.auto_cropped) {
+      if (el.detailAutocrop) {
+        el.detailAutocrop.style.display = 'inline-block';
+        el.detailAutocrop.textContent = `Auto-cropped (${(r.detected_container || 'UI').replace('_', ' ')})`;
+      }
+    } else {
+      if (el.detailAutocrop) el.detailAutocrop.style.display = 'none';
+    }
+
+    if (r.watermark && r.watermark.watermark_detected) {
+      if (el.detailWatermark) {
+        el.detailWatermark.style.display = 'inline-block';
+        el.detailWatermark.textContent = `Watermark: ${(r.watermark.watermark_type || 'AI').replace('_', ' ')}`;
+      }
+    } else {
+      if (el.detailWatermark) el.detailWatermark.style.display = 'none';
+    }
+
     if (r.cached) {
       const origTime = r.original_time_taken_seconds !== undefined ? r.original_time_taken_seconds : (r.time_taken_seconds || 0.45);
       el.detailDuration.textContent = `analyzed in ${origTime}s (cached)`;
@@ -757,12 +789,14 @@
 
     if (normV === 'Inconclusive') {
       el.verdictScoreDisplay.textContent = 'Inconclusive';
+    } else if (normV === 'AI evidence found (strong)') {
+      el.verdictScoreDisplay.textContent = `AI Evidence Found (${(r.probability * 100).toFixed(0)}%)`;
+    } else if (normV === 'No AI evidence found (not proof of real)') {
+      el.verdictScoreDisplay.textContent = `No AI Evidence Found (${(r.probability * 100).toFixed(0)}%)`;
     } else {
-      el.verdictScoreDisplay.textContent = (r.ai_percentage !== null && r.ai_percentage !== undefined)
-        ? `${r.ai_percentage}%`
-        : (r.probability_display || normV);
+      el.verdictScoreDisplay.textContent = `${normV} (${(r.probability * 100).toFixed(0)}%)`;
     }
-    el.verdictSummaryLine.textContent = r.summary_reason || 'Multi-signal analysis complete.';
+    el.verdictSummaryLine.textContent = r.summary_reason || r.summary || 'Multi-signal analysis complete.';
 
     // 2b. Compact Notice Chips Row
     if (el.verdictNoticesRow) {
@@ -771,10 +805,32 @@
         : '';
       el.noticeChipType.textContent = (r.image_type || 'photo-like') + typeProb;
 
+      if (el.noticeChipCondition) {
+        el.noticeChipCondition.textContent = r.condition_label || 'Standard';
+      }
+
+      if (r.auto_cropped) {
+        if (el.noticeChipAutocrop) {
+          el.noticeChipAutocrop.style.display = 'inline-flex';
+          el.noticeChipAutocrop.textContent = `Auto-cropped (${(r.detected_container || 'UI').replace('_', ' ')})`;
+        }
+      } else {
+        if (el.noticeChipAutocrop) el.noticeChipAutocrop.style.display = 'none';
+      }
+
+      if (r.watermark && r.watermark.watermark_detected) {
+        if (el.noticeChipWatermark) {
+          el.noticeChipWatermark.style.display = 'inline-flex';
+          el.noticeChipWatermark.textContent = `Watermark: ${(r.watermark.watermark_type || 'AI').replace('_', ' ')}`;
+        }
+      } else {
+        if (el.noticeChipWatermark) el.noticeChipWatermark.style.display = 'none';
+      }
+
       const compNotice = r.compression_notice || (r.image_type_res && r.image_type_res.compression_notice) || (r.signals && r.signals.image_type && r.signals.image_type.compression_notice);
-      if (r.is_heavily_recompressed || compNotice) {
+      if (r.is_heavily_recompressed || compNotice || r.condition === 'whatsapp' || r.condition === 'jpeg_compressed') {
         el.noticeChipCompression.style.display = 'inline-flex';
-        el.noticeChipCompression.textContent = 'Lossy Recompression';
+        el.noticeChipCompression.textContent = r.condition === 'whatsapp' ? 'WhatsApp Recompression' : 'Lossy Recompression';
       } else {
         el.noticeChipCompression.style.display = 'none';
       }
@@ -795,15 +851,17 @@
 
     // 2d. Compression Notice
     const compNotice = r.compression_notice || (r.image_type_res && r.image_type_res.compression_notice) || (r.signals && r.signals.image_type && r.signals.image_type.compression_notice);
-    if (r.is_heavily_recompressed || compNotice) {
+    if (r.is_heavily_recompressed || compNotice || r.condition === 'whatsapp') {
       el.compressionNoticeBox.style.display = 'flex';
-      el.compressionNoticeText.textContent = compNotice || 'Lossy recompression detected (e.g. WhatsApp or low JPEG quality). Compression artifacts obscure fine camera noise. Result calibrated to honest Inconclusive.';
+      el.compressionNoticeText.textContent = compNotice || (r.condition === 'whatsapp'
+        ? 'WhatsApp recompression detected. High-frequency camera grain has been quantized. Precision guardrails prevent claiming definitive camera origin.'
+        : 'Lossy recompression detected. Compression artifacts obscure fine camera noise.');
     } else {
       el.compressionNoticeBox.style.display = 'none';
     }
 
     // 3. "Why this verdict?" Box
-    el.whyVerdictContent.textContent = r.why_this_verdict || r.summary_reason || 'Multi-signal detector evaluation complete.';
+    el.whyVerdictContent.textContent = r.why_this_verdict || r.summary_reason || r.summary || 'Multi-signal detector evaluation complete.';
 
     // 4. Three Evidence Lists
     renderEvidenceLists(r);
@@ -832,8 +890,8 @@
     // 8. Signal Accordion Rows
     renderSignalAccordion(r);
 
-    // 9. Gemini Card Reset
-    el.geminiResultCard.style.display = 'none';
+    // 9. Gemini Card Render
+    renderGeminiCard(r);
   }
 
   function renderEvidenceLists(r) {
@@ -957,6 +1015,7 @@
     }
 
     const weightsMap = r.per_model_weights || (r.signals && r.signals.ml_ensemble && r.signals.ml_ensemble.per_model_weights) || {};
+    const modelMetaMap = r.model_metadata || (r.signals && r.signals.ml_ensemble && r.signals.ml_ensemble.model_metadata) || {};
 
     if (!modelsMap || Object.keys(modelsMap).length === 0) {
       el.modelBarsList.innerHTML = '<div style="font-size: 0.74rem; color: var(--muted);">No individual model scores recorded.</div>';
@@ -964,10 +1023,11 @@
     }
 
     const friendlyNames = {
-      'dima806/ai_vs_real_image_detection': 'ViT-B/16 Generalist (ai_vs_real)',
-      'Organika/sdxl-detector': 'SDXL Diffusion Specialist',
-      'Ateeqq/ai-vs-human-image-detector': 'Human vs AI Classifier',
-      'generalizing_dinov2_probe': 'Generalizing DINOv2 Probe',
+      'dima806/ai_vs_real_image_detection': 'ViT-B/16 (CIFAKE)',
+      'Organika/sdxl-detector': 'SDXL Specialist',
+      'Ateeqq/ai-vs-human-image-detector': 'SigLIP Generalist',
+      'generalizing_dinov2_probe': 'Multi-Backbone Probe (DINOv2+CLIP)',
+      'gemini_semantic': 'Gemini Forensic Reasoning',
     };
 
     Object.keys(modelsMap).forEach(mKey => {
@@ -977,7 +1037,10 @@
       const weightNum = weightsMap[mKey];
       const weightStr = (weightNum !== undefined && weightNum !== null) ? ` (weight: ${(weightNum * 100).toFixed(0)}%)` : '';
 
-      const displayName = friendlyNames[mKey] || mKey.split('/').pop();
+      const modelMeta = modelMetaMap[mKey] || {};
+      const displayName = modelMeta.name || friendlyNames[mKey] || mKey.split('/').pop();
+      const reliabilityBadge = modelMeta.reliability_badge || '';
+      const conditionStrengths = modelMeta.condition_strengths || '';
 
       const row = document.createElement('div');
       row.className = 'model-bar-row';
@@ -1011,8 +1074,100 @@
       row.appendChild(labelLine);
       row.appendChild(track);
 
+      if (reliabilityBadge || conditionStrengths) {
+        const metaLine = document.createElement('div');
+        metaLine.className = 'model-meta-line';
+        if (reliabilityBadge) {
+          const bSpan = document.createElement('span');
+          bSpan.className = 'model-badge-pill';
+          bSpan.textContent = reliabilityBadge;
+          metaLine.appendChild(bSpan);
+        }
+        if (conditionStrengths) {
+          const sSpan = document.createElement('span');
+          sSpan.className = 'model-condition-text';
+          sSpan.textContent = conditionStrengths;
+          metaLine.appendChild(sSpan);
+        }
+        row.appendChild(metaLine);
+      }
+
       el.modelBarsList.appendChild(row);
     });
+  }
+
+  function renderGeminiCard(r) {
+    if (!el.geminiResultCard) return;
+    const g = r.gemini;
+    if (!g || ( (!g.findings || g.findings.length === 0) && (!g.counter_evidence || g.counter_evidence.length === 0) )) {
+      el.geminiResultCard.style.display = 'none';
+      return;
+    }
+
+    el.geminiResultCard.style.display = 'block';
+    if (el.geminiCardBadge) {
+      el.geminiCardBadge.textContent = g.score !== null && g.score !== undefined
+        ? `AI Likelihood: ${(g.score * 100).toFixed(0)}% (${g.confidence || 'medium'} confidence)`
+        : 'Forensics Completed';
+    }
+
+    if (el.geminiFindingsList) {
+      el.geminiFindingsList.innerHTML = '';
+      if (g.findings && g.findings.length > 0) {
+        if (el.geminiFindingsSection) el.geminiFindingsSection.style.display = 'block';
+        g.findings.forEach(f => {
+          const card = document.createElement('div');
+          const sev = (f.severity || 'medium').toLowerCase();
+          card.className = `gemini-finding-card severity-${sev}`;
+
+          const header = document.createElement('div');
+          header.className = 'gemini-finding-header';
+
+          const catBadge = document.createElement('span');
+          catBadge.className = 'gemini-category-badge';
+          catBadge.textContent = f.category || 'Visual';
+
+          const sevBadge = document.createElement('span');
+          sevBadge.className = `gemini-severity-badge ${sev}`;
+          sevBadge.textContent = f.severity || 'med';
+
+          header.appendChild(catBadge);
+          header.appendChild(sevBadge);
+
+          if (f.region_description) {
+            const regSpan = document.createElement('span');
+            regSpan.className = 'gemini-region-text';
+            regSpan.textContent = `📍 ${f.region_description}`;
+            header.appendChild(regSpan);
+          }
+
+          const desc = document.createElement('div');
+          desc.className = 'gemini-finding-desc';
+          desc.textContent = f.description || '';
+
+          card.appendChild(header);
+          card.appendChild(desc);
+          el.geminiFindingsList.appendChild(card);
+        });
+      } else {
+        if (el.geminiFindingsSection) el.geminiFindingsSection.style.display = 'none';
+      }
+    }
+
+    if (el.geminiCounterList) {
+      el.geminiCounterList.innerHTML = '';
+      if (g.counter_evidence && g.counter_evidence.length > 0) {
+        if (el.geminiCounterSection) el.geminiCounterSection.style.display = 'block';
+        g.counter_evidence.forEach(itemText => {
+          const li = document.createElement('li');
+          li.className = 'gemini-counter-item';
+          li.textContent = itemText;
+          el.geminiCounterList.appendChild(li);
+        });
+      } else {
+        if (el.geminiCounterSection) el.geminiCounterSection.style.display = 'none';
+      }
+    }
   }
 
   function renderForensicViews(r) {
@@ -1113,11 +1268,19 @@
     const ml = sig.ml || sig.ml_ensemble || {};
     const mlScore = ml.score !== undefined ? ml.score : (r.model_scores ? Object.values(r.model_scores).reduce((a, b) => a + b, 0) / Object.values(r.model_scores).length : null);
     el.badgeMlStatus.textContent = mlScore !== null ? `Ensemble: ${(mlScore * 100).toFixed(0)}%` : 'Active';
-    el.mlDetailsBody.innerHTML = `<strong>Vision Ensemble:</strong> Analyzed using ViT-B/16 generalist, SDXL specialist, human-vs-AI classifier, and generalizing DINOv2 probe.`;
+    el.mlDetailsBody.innerHTML = `<strong>Vision Ensemble:</strong> Evaluated across SigLIP Generalist, Multi-Backbone Probe (DINOv2+CLIP), SDXL Specialist, and ViT-B/16 with condition-aware dynamic weighting.`;
 
     // 6. Gemini
-    el.badgeGeminiStatus.textContent = 'On-Demand';
-    el.geminiDetailsBody.textContent = 'Click "Deep Check (Gemini)" at top right to inspect semantic anomalies via Gemini multimodal reasoning.';
+    const gem = sig.gemini || r.gemini;
+    if (gem && gem.score !== null && gem.score !== undefined) {
+      el.badgeGeminiStatus.textContent = `Score: ${(gem.score * 100).toFixed(0)}%`;
+      el.badgeGeminiStatus.className = `acc-status-pill ${gem.score >= 0.65 ? 'flagged' : (gem.score <= 0.35 ? 'found' : 'neutral')}`;
+      el.geminiDetailsBody.innerHTML = `<strong>Gemini Semantic Reasoning:</strong> Model ${gem.model_used || 'Gemini'} evaluated anatomy, physics, text, and texture. (${(gem.findings || []).length} artifact findings recorded).`;
+    } else {
+      el.badgeGeminiStatus.textContent = 'Available';
+      el.badgeGeminiStatus.className = 'acc-status-pill neutral';
+      el.geminiDetailsBody.textContent = 'Click "Deep Check (Gemini)" at top right to inspect semantic anomalies via Gemini multimodal reasoning.';
+    }
   }
 
   // ===========================================================================
@@ -1150,18 +1313,12 @@
       }
 
       if (data.status === 'success' && data.gemini) {
-        const g = data.gemini;
-        el.geminiResultCard.style.display = 'flex';
-        el.geminiCardBadge.textContent = g.score !== null ? `AI Probability: ${(g.score * 100).toFixed(1)}% (${g.confidence} confidence)` : 'Inconclusive';
-        el.geminiPromptBox.textContent = 'Digital forensics expert prompt: inspect irregular anatomy, impossible lighting, depth-of-field, sensor noise floor, and geometric coherence.';
-
-        el.geminiObservationsList.innerHTML = '';
-        const obs = g.observations || g.evidence || ['No specific anomalies flagged.'];
-        obs.forEach(line => {
-          const li = document.createElement('li');
-          li.textContent = line;
-          el.geminiObservationsList.appendChild(li);
-        });
+        const itemResult = state.results.find(res => res._id === state.selectedId) || item.result;
+        if (itemResult) {
+          itemResult.gemini = data.gemini;
+          renderGeminiCard(itemResult);
+          renderSignalAccordion(itemResult);
+        }
       }
     } catch (err) {
       alert(`Gemini check failed: ${err.message}`);
@@ -1328,11 +1485,11 @@
 
   function getVerdictBadgeClass(normV) {
     switch (normV) {
-      case 'Likely AI': return 'verdict-likely-ai';
+      case 'AI evidence found (strong)': return 'verdict-strong-ai';
       case 'Leaning AI': return 'verdict-leaning-ai';
       case 'Inconclusive': return 'verdict-inconclusive';
-      case 'Leaning Real': return 'verdict-leaning-real';
-      case 'Likely Real': return 'verdict-likely-real';
+      case 'No AI evidence found (not proof of real)': return 'verdict-no-evidence';
+      case 'Likely real': return 'verdict-likely-real';
       case 'Failed': return 'verdict-failed';
       default: return 'verdict-inconclusive';
     }
@@ -1341,11 +1498,11 @@
   function getVerdictDotClass(v) {
     const normV = normalizeVerdict(v);
     switch (normV) {
-      case 'Likely AI': return 'red';
+      case 'AI evidence found (strong)': return 'red';
       case 'Leaning AI': return 'orange';
       case 'Inconclusive': return 'yellow';
-      case 'Leaning Real': return 'teal';
-      case 'Likely Real': return 'green';
+      case 'No AI evidence found (not proof of real)': return 'teal';
+      case 'Likely real': return 'green';
       case 'Failed': return 'dark-red';
       default: return 'gray';
     }
@@ -1353,11 +1510,11 @@
 
   function getVerdictBannerBorderClass(normV) {
     switch (normV) {
-      case 'Likely AI': return 'verdict-border-likely-ai';
+      case 'AI evidence found (strong)': return 'verdict-border-strong-ai';
       case 'Leaning AI': return 'verdict-border-leaning-ai';
       case 'Inconclusive': return 'verdict-border-inconclusive';
-      case 'Leaning Real': return 'verdict-border-leaning-real';
-      case 'Likely Real': return 'verdict-border-likely-real';
+      case 'No AI evidence found (not proof of real)': return 'verdict-border-no-evidence';
+      case 'Likely real': return 'verdict-border-likely-real';
       default: return '';
     }
   }
@@ -1448,7 +1605,7 @@
         name: 'portrait_real_camera.jpg',
         size: 2450000,
         status: 'done',
-        verdict: 'Likely Real',
+        verdict: 'Likely real',
         thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%233DDC97" font-size="10" text-anchor="middle">REAL</text></svg>',
         result: {
           _id: 'demo_1',
@@ -1457,7 +1614,7 @@
           image_dimensions: '1920x1080',
           image_type: 'photo-like',
           is_photo_like: true,
-          verdict: 'Likely Real',
+          verdict: 'Likely real',
           confidence: 'high',
           ai_probability: 0.12,
           ai_percentage: 12.0,
@@ -1491,7 +1648,7 @@
         name: 'synthetic_cyberpunk_sdxl.png',
         size: 3200000,
         status: 'done',
-        verdict: 'Likely AI',
+        verdict: 'AI evidence found (strong)',
         thumbUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%231E293B"/><text x="32" y="36" fill="%23FF6B6B" font-size="10" text-anchor="middle">AI</text></svg>',
         result: {
           _id: 'demo_2',
@@ -1500,7 +1657,7 @@
           image_dimensions: '1024x1024',
           image_type: 'photo-like',
           is_photo_like: true,
-          verdict: 'Likely AI',
+          verdict: 'AI evidence found (strong)',
           confidence: 'high',
           ai_probability: 0.96,
           ai_percentage: 96.0,

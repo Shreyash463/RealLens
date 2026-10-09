@@ -101,12 +101,19 @@ class MLEnsemble:
                     return False
                 pkg = joblib.load(probe_path)
                 backbone_id = pkg.get("backbone_id", "facebook/dinov2-small")
-                logger.info(f"Loading generalizing probe backbone '{backbone_id}'...")
-                processor = AutoImageProcessor.from_pretrained(backbone_id)
-                model = AutoModel.from_pretrained(backbone_id).to(self.device_str)
-                model.eval()
-                self.loaded_models[model_name] = (model, processor, pkg)
-                logger.info(f"Successfully loaded '{model_name}'.")
+                clip_id = pkg.get("clip_id", "openai/clip-vit-base-patch32")
+                logger.info(f"Loading multi-backbone probe '{backbone_id}' & '{clip_id}'...")
+                
+                dino_proc = AutoImageProcessor.from_pretrained(backbone_id)
+                dino_model = AutoModel.from_pretrained(backbone_id).to(self.device_str)
+                dino_model.eval()
+
+                clip_proc = AutoImageProcessor.from_pretrained(clip_id)
+                clip_model = AutoModel.from_pretrained(clip_id).to(self.device_str)
+                clip_model.eval()
+
+                self.loaded_models[model_name] = ((dino_model, clip_model), (dino_proc, clip_proc), pkg)
+                logger.info(f"Successfully loaded multi-backbone probe '{model_name}'.")
                 return True
 
             logger.info(f"Loading model '{model_name}' on {self.device_str}...")
@@ -145,32 +152,57 @@ class MLEnsemble:
         try:
             import torch
 
-            model, processor, extra = self.loaded_models[model_name]
+            if "probe" in model_name:
+                (dino_model, clip_model), (dino_proc, clip_proc), pkg = self.loaded_models[model_name]
+                img_rgb = image.convert("RGB")
+                
+                # DINOv2 features
+                d_inp = dino_proc(images=[img_rgb], return_tensors="pt")
+                d_inp = {k: v.to(self.device_str) for k, v in d_inp.items()}
+                with torch.no_grad():
+                    d_out = dino_model(**d_inp)
+                    d_cls = d_out.last_hidden_state[:, 0, :].cpu().numpy().flatten()
+                    d_patches = d_out.last_hidden_state[:, 1:, :].cpu().numpy()[0]
+                    d_mean = np.mean(d_patches, axis=0)
+                    d_std = np.std(d_patches, axis=0)
+                d_feat = np.concatenate([d_cls, d_mean, d_std])
+                d_norm = np.linalg.norm(d_feat)
+                if d_norm > 1e-6:
+                    d_feat = d_feat / d_norm
 
+                # CLIP features
+                c_inp = clip_proc(images=[img_rgb], return_tensors="pt")
+                c_inp = {k: v.to(self.device_str) for k, v in c_inp.items()}
+                with torch.no_grad():
+                    c_out = clip_model.get_image_features(**c_inp)
+                    if hasattr(c_out, "pooler_output"):
+                        c_feat = c_out.pooler_output.cpu().numpy().flatten()
+                    elif hasattr(c_out, "last_hidden_state"):
+                        c_feat = c_out.last_hidden_state[:, 0, :].cpu().numpy().flatten()
+                    else:
+                        c_feat = c_out.cpu().numpy().flatten()
+                c_norm = np.linalg.norm(c_feat)
+                if c_norm > 1e-6:
+                    c_feat = c_feat / c_norm
+
+                joint_feat = np.concatenate([d_feat, c_feat]).reshape(1, -1)
+                feat_scaled = pkg["scaler"].transform(joint_feat)
+                clf = pkg.get("calibrator") or pkg["classifier"]
+                prob = float(clf.predict_proba(feat_scaled)[0, 1])
+                return max(0.0, min(1.0, prob))
+
+            model, processor, ai_idx = self.loaded_models[model_name]
             images_to_run = [image]
             if tta:
                 images_to_run.append(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
 
             inputs = processor(images=images_to_run, return_tensors="pt")
             inputs = {k: v.to(self.device_str) for k, v in inputs.items()}
-
-            if "probe" in model_name:
-                pkg = extra
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                    cls_emb = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-                cls_scaled = pkg["scaler"].transform(cls_emb)
-                probs = pkg["classifier"].predict_proba(cls_scaled)[:, 1]
-                avg_ai_prob = float(np.mean(probs))
-                return max(0.0, min(1.0, avg_ai_prob))
-
-            ai_idx = extra
             with torch.no_grad():
                 outputs = model(**inputs)
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=-1)
 
-            # Average over TTA passes
             ai_probs = probs[:, ai_idx].cpu().numpy()
             avg_ai_prob = float(np.mean(ai_probs))
             return max(0.0, min(1.0, avg_ai_prob))

@@ -939,6 +939,7 @@ kbd {
   white-space: nowrap;
 }
 
+.verdict-badge.verdict-strong-ai,
 .verdict-badge.verdict-likely-ai {
   background: var(--error-bg);
   color: var(--error);
@@ -957,6 +958,7 @@ kbd {
   border: 1px solid rgba(245, 180, 84, 0.35);
 }
 
+.verdict-badge.verdict-no-evidence,
 .verdict-badge.verdict-leaning-real {
   background: var(--teal-bg);
   color: var(--teal);
@@ -1077,6 +1079,24 @@ kbd {
   background: var(--success-bg);
 }
 
+.meta-pill.condition-pill {
+  color: #FBBF24;
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.meta-pill.crop-pill {
+  color: #A78BFA;
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(167, 139, 250, 0.08);
+}
+
+.meta-pill.watermark-pill {
+  color: var(--error);
+  border-color: rgba(255, 107, 107, 0.35);
+  background: var(--error-bg);
+}
+
 .detail-header-actions {
   display: flex;
   align-items: center;
@@ -1134,9 +1154,11 @@ kbd {
   background: var(--accent);
 }
 
+.verdict-banner.verdict-border-strong-ai::before,
 .verdict-banner.verdict-border-likely-ai::before { background: var(--error); }
 .verdict-banner.verdict-border-leaning-ai::before { background: var(--orange); }
 .verdict-banner.verdict-border-inconclusive::before { background: var(--warn); }
+.verdict-banner.verdict-border-no-evidence::before,
 .verdict-banner.verdict-border-leaning-real::before { background: var(--teal); }
 .verdict-banner.verdict-border-likely-real::before { background: var(--success); }
 
@@ -1201,6 +1223,24 @@ kbd {
   color: var(--accent);
   border-color: rgba(110, 168, 255, 0.3);
   background: rgba(110, 168, 255, 0.08);
+}
+
+.notice-chip.chip-condition {
+  color: #FBBF24;
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.notice-chip.chip-autocrop {
+  color: #A78BFA;
+  border-color: rgba(167, 139, 250, 0.35);
+  background: rgba(167, 139, 250, 0.08);
+}
+
+.notice-chip.chip-watermark {
+  color: var(--error);
+  border-color: rgba(255, 107, 107, 0.35);
+  background: var(--error-bg);
 }
 
 .notice-chip.chip-compression {
@@ -1582,6 +1622,139 @@ kbd {
   background: var(--accent);
   border-radius: var(--radius-pill);
   transition: width var(--transition-normal);
+}
+
+.model-meta-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.69rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.model-badge-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  color: #CBD5E1;
+  font-weight: 550;
+  font-size: 0.67rem;
+}
+
+.model-condition-text {
+  font-size: 0.67rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Gemini Multimodal Forensic Findings Cards */
+.gemini-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.gemini-finding-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gemini-finding-card.severity-high {
+  border-left-color: var(--error);
+}
+
+.gemini-finding-card.severity-medium {
+  border-left-color: var(--orange);
+}
+
+.gemini-finding-card.severity-low {
+  border-left-color: var(--warn);
+}
+
+.gemini-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gemini-category-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(110, 168, 255, 0.15);
+  color: var(--accent);
+}
+
+.gemini-severity-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  text-transform: uppercase;
+}
+
+.gemini-severity-badge.high {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.gemini-severity-badge.medium {
+  background: var(--orange-bg);
+  color: var(--orange);
+}
+
+.gemini-severity-badge.low {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.gemini-region-text {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.gemini-finding-desc {
+  font-size: 0.77rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.gemini-counter-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.76rem;
+  color: var(--text);
+}
+
+.gemini-counter-item {
+  position: relative;
+  padding-left: 14px;
+}
+
+.gemini-counter-item::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--success);
+  font-weight: bold;
 }
 
 /* Visual Forensics (ELA Viewport - Neutral Card, max 420px, contain) */

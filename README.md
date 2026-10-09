@@ -1,8 +1,8 @@
-# RealLens 🔍 (v1.0)
+# RealLens 🔍 (v5.0)
 
 **RealLens** is a local, privacy-first forensic analysis tool that estimates whether an image is AI-generated or an authentic camera photograph / real graphic.
 
-Designed specifically for real-world inspection without sugarcoating, RealLens combines **cryptographic provenance**, **compression physics**, **frequency-domain artifacts**, and a **diverse machine learning vision ensemble** with rigorous honesty guardrails and learned image gating.
+Designed specifically for real-world inspection without sugarcoating, RealLens combines **cryptographic provenance**, **compression physics**, **frequency-domain artifacts**, and a **robust multi-backbone machine learning vision ensemble** with rigorous honesty guardrails and learned image gating.
 
 ---
 
@@ -10,10 +10,12 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 
 1. **Probability + Evidence, Never "100% Proof"**: Every output is an estimate accompanied by detector evidence. Missing metadata or watermarks is neutral and never constitutes proof of authenticity.
 2. **Empirical Grounding**: All performance metrics reported in [`EVAL_REPORT.md`](EVAL_REPORT.md) stem from automated test runs on real benchmark sets. No simulated or hardcoded metrics.
-3. **Disagreement Transparency**: When machine learning vision models disagree substantially (`spread >= 0.50`), RealLens refuses to force a verdict; it flags the uncertainty and assigns the sample to an explicit `Inconclusive` band with a probability range (`between X% and Y% across models`).
-4. **Learned Image Gate (DINOv2 + Engineered Features)**: A trained classifier distinguishes camera photos from digital graphics, certificates, and UI screenshots, preventing deep vision models from misclassifying flat digital graphics while ensuring heavily compressed mobile photos and selfies receive full inspection.
-5. **No Synthetic Placeholders**: When physical forensics (ELA / FFT) are not applicable (e.g., flat graphics or non-photo inputs), RealLens reports "Not applicable" in neutral grey and completely excludes them from fusion math rather than outputting misleading 50% numbers.
-6. **Held-Out Integrity**: The final test sets (`data/test/` and `data/hard_test/`) were strictly held out and evaluated only **once** after concluding all tuning.
+3. **Strict Invariant on Recompression**: The system **strictly forbids** returning `Likely real` on images that have undergone WhatsApp compression, screenshot capture, or lossy recompression without verified camera EXIF provenance. These images honestly receive `No AI evidence found (not proof of real)`.
+4. **Condition-Aware Model Weighting**: Fragile models (e.g. SDXL specialist) that fail on recompression are dynamically downweighted, while invariant models (SigLIP and Multi-Backbone Probe) take precedence.
+5. **Screenshot Pre-Processing**: Automatically detects and crops letterboxes, pillarboxes, and OS status bars before vision inspection, preventing UI artifacts from misleading detectors.
+6. **Watermark Astroid Star Correlator**: Uses 2D normalized cross-correlation against an astroid star template ($|x|^{0.65} + |y|^{0.65} \le R^{0.65}$), preventing false alarms on high-frequency foliage while reliably catching Gemini watermarks.
+7. **Learned Image Gate (DINOv2 + Engineered Features)**: A trained classifier distinguishes camera photos from digital graphics, certificates, and UI screenshots, preventing deep vision models from misclassifying flat digital graphics.
+8. **No Synthetic Placeholders**: When physical forensics (ELA / FFT) are not applicable, RealLens reports "Not applicable" in neutral grey and completely excludes them from fusion math.
 
 ---
 
@@ -22,37 +24,47 @@ Designed specifically for real-world inspection without sugarcoating, RealLens c
 ```
                                       Uploaded Image
                                             │
+                                  Screenshot Cropper
+                         (Removes letterbox / OS status bars)
+                                            │
          ┌──────────────────────────────────┼──────────────────────────────────┐
          ▼                                  ▼                                  ▼
-   1. Learned Image Gate              2. Forensics & Provenance          3. 4-Model Deep
+   1. Learned Image Gate              2. Forensics & Provenance          3. Robust Multi-Model
    ─────────────────────────          ─────────────────────────          Vision Ensemble
    • DINOv2 384-d Cls Embedding       • EXIF Hardware Metadata           • ViT CIFAKE (dima806)
    • 8 Continuous Visual Features     • PNG Generation Chunks            • ViT SDXL (Organika)
    • Soft photo_probability           • C2PA Manifest Reader             • SigLIP (Ateeqq)
-   • Prevents Graphic False Alarms    • ELA Compression Variance         • DINOv2 Probe (Ours)
-   • 100% Recall on Chat Photos       • 2D FFT Hann Spectral Decay       • Model Spread & Weights
+   • Prevents Graphic False Alarms    • ELA Compression Variance         • Multi-Backbone Probe
+   • 100% Recall on Chat Photos       • 2D FFT Hann Spectral Decay         (DINOv2 + CLIP ViT-B/32)
+   • Condition Detector               • Astroid Star Watermark NCC       • Condition-Aware Weights
          │                                  │                                  │
          └──────────────────────────────────┼──────────────────────────────────┘
                                             ▼
                               4. Signal Fusion & Guardrails
                               ─────────────────────────────────────────
-                              • Disagreement Guardrail (Spread >= 0.50 -> Inconclusive)
-                              • Strict "Inconclusive" Headline (Range rendered below)
-                              • Learned Logistic Regression Stacker on Agreement
-                              • Pipeline-Versioned Cache (v1.0.0) with Bypass
+                              • 5 Precision Categories:
+                                - AI evidence found (strong)
+                                - Leaning AI
+                                - Inconclusive
+                                - No AI evidence found (not proof of real)
+                                - Likely real (Camera EXIF verified only)
+                              • Strict Recompression Invariant Enforced
+                              • Dynamic Condition-Aware Stacker
+                              • Pipeline-Versioned Cache (v5.0.0)
                                             │
                                             ▼
                           Single-Page VeilShare-Style Dashboard
             ┌───────────────────────────────┴───────────────────────────────┐
             ▼                                                               ▼
       Left Panel (Sticky ~35%)                                Right Panel (~65%)
-      • Drag & drop, paste, folder drops                      • Summary counter strip
+      • Drag & drop, paste, folder drops                      • Summary counter strip (5 filters)
       • Auto-analyze toggle switch                            • Big verdict banner & reason
-      • Queue rows with status dots                           • 3 Structured evidence lists
-      • Progress bar & ETA remaining                          • Reverse search tools (Google / TinEye)
-      • CSV & JSON export buttons                             • Raw model progress bars & spread
+      • Queue rows with status dots                           • Auto-crop & condition badges
+      • Progress bar & ETA remaining                          • 3 Structured evidence lists
+      • CSV & JSON export buttons                             • Gemini semantic reasoning cards
+                                                              • Reverse search (Google, TinEye, Yandex)
+                                                              • Raw model progress bars & reliability
                                                               • Neutral ELA forensics viewport
-                                                              • Collapsible multi-signal accordion
 ```
 
 ---
@@ -157,7 +169,25 @@ Open your browser to:
 
 ## Running Automated Evaluations & Training
 
-### 1. Run Phase 4 End-to-End Stress Test Suite
+### 1. Run Phase 5 Regression & Invariant Test Suite
+Tests Ganesha AI painting, real tree man WhatsApp photo, screenshot crops, and invariant guardrails:
+```bash
+python evaluation/test_phase5_regression.py
+```
+
+### 2. Run Model Condition Degradation Audit
+Evaluates each vision backbone independently across 8 degradation conditions:
+```bash
+python evaluation/audit_models_per_condition.py
+```
+
+### 3. Retrain Robust Multi-Backbone Probe (DINOv2 + CLIP)
+Trains the multi-backbone probe with balanced multiscale augmentations:
+```bash
+python evaluation/train_robust_multi_probe.py
+```
+
+### 4. Run Phase 4 End-to-End Stress Test Suite
 Tests user WhatsApp mirror selfie, cache hits, cache bypass (`ignore_cache=1`), certificate suppression, and 45-image mixed batch:
 ```bash
 python tests/test_phase4_end_to_end.py
@@ -235,25 +265,30 @@ RealLens/
 ├── reallens/
 │   ├── app.py                     # Flask server, versioned cache & REST API
 │   ├── detectors/
+│   │   ├── condition.py           # Degradation & channel condition detector
+│   │   ├── screenshot_cropper.py  # Auto-cropper for status bars & letterboxes
+│   │   ├── watermarks.py          # Astroid star normalized cross-correlation watermark detector
+│   │   ├── gemini_semantic.py     # Gemini multimodal 6-item structured forensic rubric
 │   │   ├── image_type.py          # Learned photo-vs-non-photo gate (DINOv2 + visual features)
 │   │   ├── metadata.py            # EXIF, PNG chunks, IPTC & camera tags
 │   │   ├── c2pa_check.py          # Content Credentials manifest parser
 │   │   ├── ela.py                 # Error Level Analysis & heatmap generator
 │   │   ├── frequency.py           # 2D FFT & radial power spectral slope
-│   │   ├── ml_ensemble.py         # 4-model ViT, SigLIP & DINOv2 ensemble
-│   │   ├── gemini_layer.py        # Optional Gemini API visual reasoning
-│   │   └── fusion.py              # Learned stacker & honest uncertain-zone fusion
+│   │   ├── ml_ensemble.py         # 4-model ViT, SigLIP & multi-backbone probe
+│   │   └── fusion.py              # Condition-aware dynamic stacker & precision guardrails
 │   ├── static/                    # Dark ink theme CSS & JS (main.js, style.css)
 │   └── templates/                 # UI templates (index.html)
 ├── models/
 │   ├── photo_vs_non_photo_gate.joblib # Trained learned image gate
-│   ├── generalizing_probe.joblib  # Trained DINOv2 linear probe
+│   ├── generalizing_probe.joblib  # Trained multi-backbone DINOv2 + CLIP probe
 │   └── learned_fusion_stacker.joblib # Trained calibrated fusion stacker
 ├── evaluation/
+│   ├── build_matched_dataset.py   # 960-image matched dataset builder across 8 conditions
+│   ├── check_matched_shortcuts.py # Shortcut classifier verifier (56.04% acc)
+│   ├── audit_models_per_condition.py # Condition degradation audit (AUC, Acc, TPR, FPR)
+│   ├── train_robust_multi_probe.py # Multi-backbone probe trainer (85.0% val acc)
+│   ├── test_phase5_regression.py  # Empirical regression test suite (Ganesha AI, Tree Man)
 │   ├── train_gate.py              # Learned image gate trainer
-│   ├── train_probe.py             # DINOv2/CLIP probe trainer
-│   ├── train_fusion_stacker.py    # Learned fusion stacker trainer
-│   ├── compare_models_hard.py     # 4-model comparative benchmark script
 │   ├── run_eval.py                # Evaluation engine & error diagnostics
 │   └── robustness.py              # Transformation robustness test suite
 ├── tests/

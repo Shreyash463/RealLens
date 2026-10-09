@@ -1,0 +1,70 @@
+{
+  "ganesha_ai": {
+    "verdict": "Leaning AI",
+    "headline": "Leaning AI",
+    "probability": 0.746,
+    "confidence": "medium",
+    "condition": "standard",
+    "auto_cropped": false,
+    "detected_container": null,
+    "spread": 0.28,
+    "model_scores": {
+      "dima806/ai_vs_real_image_detection": 0.1192,
+      "Organika/sdxl-detector": 0.7281,
+      "Ateeqq/ai-vs-human-image-detector": 1.0,
+      "generalizing_dinov2_probe": 0.9568
+    },
+    "summary": "Multiple generative indicators detected (75% AI probability), but weakened by compression."
+  },
+  "real_tree_man": {
+    "verdict": "No AI evidence found (not proof of real)",
+    "headline": "No AI evidence found (not proof of real)",
+    "probability": 0.179,
+    "confidence": "medium",
+    "condition": "whatsapp",
+    "auto_cropped": false,
+    "detected_container": null,
+    "spread": 0.28,
+    "model_scores": {
+      "dima806/ai_vs_real_image_detection": 0.4051,
+      "Organika/sdxl-detector": 0.9789,
+      "Ateeqq/ai-vs-human-image-detector": 0.0,
+      "generalizing_dinov2_probe": 0.0233
+    },
+    "summary": "Low synthetic probability (18%), but compression or missing camera EXIF prevents proof of camera origin."
+  },
+  "screenshot_ganesha_ai": {
+    "verdict": "AI evidence found (strong)",
+    "headline": "AI evidence found (strong)",
+    "probability": 0.834,
+    "confidence": "medium",
+    "condition": "screenshot",
+    "auto_cropped": true,
+    "detected_container": "letterbox",
+    "spread": 0.28,
+    "model_scores": {
+      "dima806/ai_vs_real_image_detection": 0.1192,
+      "Organika/sdxl-detector": 0.7281,
+      "Ateeqq/ai-vs-human-image-detector": 1.0,
+      "generalizing_dinov2_probe": 0.9568
+    },
+    "summary": "Robust vision detectors reach consensus on synthetic generation (83% AI likelihood)."
+  },
+  "screenshot_real_tree": {
+    "verdict": "No AI evidence found (not proof of real)",
+    "headline": "No AI evidence found (not proof of real)",
+    "probability": 0.183,
+    "confidence": "medium",
+    "condition": "standard",
+    "auto_cropped": false,
+    "detected_container": null,
+    "spread": 0.28,
+    "model_scores": {
+      "dima806/ai_vs_real_image_detection": 0.0124,
+      "Organika/sdxl-detector": 0.6552,
+      "Ateeqq/ai-vs-human-image-detector": 0.0,
+      "generalizing_dinov2_probe": 0.0241
+    },
+    "summary": "Low synthetic probability (18%), but compression or missing camera EXIF prevents proof of camera origin."
+  }
+}

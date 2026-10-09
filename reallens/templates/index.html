@@ -16,16 +16,16 @@
           <div>
             <div class="brand-row">
               <h1 class="brand-title">RealLens</h1>
-              <span class="badge-phase">v1.0</span>
+              <span class="badge-phase">v5.0</span>
             </div>
-            <div class="brand-subtitle">Multi-Signal Provenance, Forensic ELA & Deep Vision Classifier</div>
+            <div class="brand-subtitle">Condition-Aware Provenance, Multi-Backbone Forensics & Semantic Reasoning</div>
           </div>
         </div>
 
         <div class="header-status">
           <div id="version-pill" class="status-pill">
             <span class="status-dot green"></span>
-            <span id="version-text">Pipeline: v1.0.0</span>
+            <span id="version-text">Pipeline: v5.0.0</span>
           </div>
           <div id="models-pill" class="status-pill">
             <span class="status-dot blue"></span>
@@ -157,10 +157,10 @@
                 <span class="pill-label">All</span>
                 <span id="count-all" class="pill-count">0</span>
               </div>
-              <div class="summary-pill pill-likely-ai" data-filter="Likely AI" tabindex="0" role="button">
+              <div class="summary-pill pill-strong-ai" data-filter="AI evidence found (strong)" tabindex="0" role="button">
                 <span class="pill-dot red"></span>
-                <span class="pill-label">Likely AI</span>
-                <span id="count-likely-ai" class="pill-count">0</span>
+                <span class="pill-label">AI Evidence Found (Strong)</span>
+                <span id="count-strong-ai" class="pill-count">0</span>
               </div>
               <div class="summary-pill pill-leaning-ai" data-filter="Leaning AI" tabindex="0" role="button">
                 <span class="pill-dot orange"></span>
@@ -172,12 +172,12 @@
                 <span class="pill-label">Inconclusive</span>
                 <span id="count-inconclusive" class="pill-count">0</span>
               </div>
-              <div class="summary-pill pill-leaning-real" data-filter="Leaning Real" tabindex="0" role="button">
+              <div class="summary-pill pill-no-evidence" data-filter="No AI evidence found (not proof of real)" tabindex="0" role="button">
                 <span class="pill-dot teal"></span>
-                <span class="pill-label">Leaning Real</span>
-                <span id="count-leaning-real" class="pill-count">0</span>
+                <span class="pill-label">No AI Evidence Found</span>
+                <span id="count-no-evidence" class="pill-count">0</span>
               </div>
-              <div class="summary-pill pill-likely-real" data-filter="Likely Real" tabindex="0" role="button">
+              <div class="summary-pill pill-likely-real" data-filter="Likely real" tabindex="0" role="button">
                 <span class="pill-dot green"></span>
                 <span class="pill-label">Likely Real</span>
                 <span id="count-likely-real" class="pill-count">0</span>
@@ -257,6 +257,9 @@
                     <span id="detail-dimensions" class="meta-pill">1920x1080</span>
                     <span id="detail-size" class="meta-pill">1.4 MB</span>
                     <span id="detail-image-type" class="meta-pill type-pill">photo-like</span>
+                    <span id="detail-condition" class="meta-pill condition-pill">Condition: Standard</span>
+                    <span id="detail-autocrop" class="meta-pill crop-pill" style="display: none;">Auto-cropped</span>
+                    <span id="detail-watermark" class="meta-pill watermark-pill" style="display: none;">Watermark: Detected</span>
                     <span id="detail-duration" class="meta-pill time-pill">0.45s</span>
                     <span id="detail-cached" class="meta-pill cache-pill" style="display: none;">⚡ Cached</span>
                   </div>
@@ -292,6 +295,9 @@
                   <!-- Compact Notice Chips Row -->
                   <div id="verdict-notices-row" class="verdict-notices-row">
                     <span id="notice-chip-type" class="notice-chip chip-type">Photo-like</span>
+                    <span id="notice-chip-condition" class="notice-chip chip-condition">Standard</span>
+                    <span id="notice-chip-autocrop" class="notice-chip chip-autocrop" style="display: none;">Auto-cropped container</span>
+                    <span id="notice-chip-watermark" class="notice-chip chip-watermark" style="display: none;">Watermark: Gemini Sparkle</span>
                     <span id="notice-chip-compression" class="notice-chip chip-compression" style="display: none;">Lossy Recompression</span>
                     <span id="notice-chip-range" class="notice-chip chip-range">Spread: 0.0%</span>
                   </div>
@@ -391,10 +397,16 @@
                     </div>
                     <div class="reverse-search-actions">
                       <a id="btn-google-lens" href="https://lens.google.com/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn">
-                        🔍 Search on Google Lens
+                        🔍 Google Lens
                       </a>
                       <a id="btn-tineye" href="https://tineye.com/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn">
-                        🔎 Search on TinEye
+                        🔎 TinEye
+                      </a>
+                      <a id="btn-yandex" href="https://yandex.com/images/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn">
+                        🌐 Yandex
+                      </a>
+                      <a id="btn-synthid" href="https://synthid.com" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn" title="Google SynthID imperceptible watermark verification portal">
+                        💠 SynthID Portal
                       </a>
                     </div>
                   </div>
@@ -572,23 +584,25 @@
                 </div>
               </div>
 
-              <!-- Gemini Result Card (Populated when triggered) -->
+              <!-- Gemini Result Card (Populated when triggered or cached) -->
               <div id="gemini-result-card" class="gemini-card" style="display: none;">
                 <div class="gemini-card-header">
                   <div class="gemini-title">
                     <span>✨</span>
-                    <strong>Gemini Deep Multimodal Analysis</strong>
+                    <strong>Gemini Multimodal Forensic Reasoning</strong>
                   </div>
                   <span id="gemini-card-badge" class="badge-subtle">AI Probability: --</span>
                 </div>
                 <div class="gemini-card-body">
-                  <div class="gemini-section">
-                    <div class="gemini-subheading">Prompt Sent:</div>
-                    <div class="gemini-prompt-box" id="gemini-prompt-box">...</div>
+                  <div class="gemini-section" id="gemini-findings-section">
+                    <div class="gemini-subheading">Semantic & Physical AI Artifact Observations:</div>
+                    <div class="gemini-findings-list" id="gemini-findings-list">
+                      <!-- Rendered as structured finding cards -->
+                    </div>
                   </div>
-                  <div class="gemini-section">
-                    <div class="gemini-subheading">Visual Observations:</div>
-                    <ul class="gemini-observations" id="gemini-observations-list"></ul>
+                  <div class="gemini-section" id="gemini-counter-section" style="margin-top: 10px;">
+                    <div class="gemini-subheading">Physical & Photographic Authenticity Indicators:</div>
+                    <ul class="gemini-counter-list" id="gemini-counter-list"></ul>
                   </div>
                 </div>
               </div>
@@ -618,7 +632,7 @@
     <!-- Footer -->
     <footer class="app-footer">
       <div class="footer-container">
-        <span>RealLens Forensic Engine • Privacy-Preserving Local Inference • v1.0 Architecture</span>
+        <span>RealLens Forensic Engine • Privacy-Preserving Local Inference • Phase 5 Condition-Aware Multi-Backbone Architecture</span>
       </div>
     </footer>
   </div>
