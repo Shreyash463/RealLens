@@ -45,9 +45,10 @@ def evaluate_directory(image_dir: Path, ground_truth_label: int, threshold: floa
             # - Definite/Leaning AI -> 1
             # - Definite/Leaning Real -> 0
             # - Inconclusive / Withheld -> -1
-            if verdict in ("Likely AI", "Leaning AI"):
+            v_lower = verdict.strip().lower()
+            if v_lower in ("likely ai", "leaning ai"):
                 pred_label = 1
-            elif verdict in ("Likely real", "Leaning real"):
+            elif v_lower in ("likely real", "leaning real"):
                 pred_label = 0
             else:
                 pred_label = -1
@@ -172,6 +173,9 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
     elif split == "messy":
         real_dir = data_dir / "messy_real"
         ai_dir = data_dir / "test" / "ai"
+    elif split == "whatsapp":
+        real_dir = data_dir / "my_images" / "real_whatsapp"
+        ai_dir = None
     else:
         raise ValueError(f"Unknown split '{split}'")
 
@@ -226,7 +230,7 @@ def run_evaluation(split: str = "tuning", threshold: float = 0.50) -> Dict[str, 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", choices=["tuning", "test", "hard_tuning", "hard_test", "user", "messy", "graphics"], default="tuning")
+    parser.add_argument("--split", choices=["tuning", "test", "hard_tuning", "hard_test", "user", "messy", "graphics", "whatsapp"], default="tuning")
     parser.add_argument("--threshold", type=float, default=0.50)
     args = parser.parse_args()
 

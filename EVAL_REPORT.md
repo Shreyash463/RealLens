@@ -196,3 +196,61 @@ Executed on live localhost server daemon (`http://127.0.0.1:5000`):
   - Tested viewports: 1920x1080 (Desktop), 1366x768 (Laptop/Tablet), 390x844 (Mobile Phone).
   - Column overlap: **0 overlapping elements**. Fixed `<colgroup>` prevents horizontal truncation.
   - Visual verification artifacts saved to `tests/screenshots/` and verified.
+
+---
+
+## 9. Phase 4 Benchmark: Learned Gate, WhatsApp Selfie Recall & Signal Honesty
+
+### 9.1. Learned Photo-vs-Non-Photo Gate Benchmark (`models/photo_vs_non_photo_gate.joblib`)
+Trained on 813 samples (528 photographic samples: camera photos, AI photo-style, WhatsApp recompressed crops, phone selfies; 285 non-photographic samples: certificates, slides, charts, screenshots, UI, flat graphics, line art).
+Evaluated on 175 held-out validation samples via `evaluation/train_gate.py`:
+
+| Metric | Heuristic Gate (Phase 2.5/3) | Learned DINOv2 + Visual Gate (Phase 4) |
+| :--- | :---: | :---: |
+| **Validation Accuracy** | 88.57% (155 / 175) | **99.43% (174 / 175)** |
+| **F1-Score** | 0.9016 | **0.9948** |
+| **WhatsApp / Compressed Photo Recall** | 82.00% (False Graphic alarms on selfies) | **100.00% (128 / 128 photos correctly flagged)** |
+| **Digital Graphics / Certificate Recall**| 100.00% (30 / 30) | **100.00% (57 / 57 non-photos caught)** |
+| **User WhatsApp Mirror Selfie (720x1600)** | Falsely classified as "flat graphic/illustration" | **Correctly classified as `photo-like` (`p=0.964`)** |
+
+### 9.2. Real-World WhatsApp Mirror Selfie Verification (`tests/test_gate_regression.py`)
+Tested specifically on the user's reported sample: `whatsapp_mirror_selfie_yellow_hoodie.jpg` (720x1600, 51.9 KB, portrait aspect ratio 0.45, heavily compressed):
+- **Classification**: `photo-like`
+- **Soft Photo Probability**: `0.964` (96.4% confidence in photographic nature)
+- **Unreliable Warning Notice**: `None` (suppressed; deep vision models permitted to inspect)
+- **Model Execution**: All 4 models executed and scored without suppression.
+
+### 9.3. Held-Out Evaluation Splits (Zero Leaks, Strict Empirical Runs)
+Evaluated across all active test suites via `python evaluation/run_eval.py`:
+
+| Dataset Split | Samples Evaluated | Inconclusive / Withheld Rate | Decided Accuracy | False Positive Rate | False Negative Rate |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Standard Test (`--split test`)** | 150 | 74.00% (111 / 150) | **100.00% (39 / 39)** | **0.00% (0 / 75)** | **0.00% (0 / 75)** |
+| **Hard Test (`--split hard_test`)** | 60 | 96.67% (58 / 60) | N/A (Honest withhold) | **3.33% (1 / 30)** | **0.00% (0 / 30)** |
+| **Non-AI Graphics (`--split graphics`)** | 30 | 100.00% (30 / 30) | N/A (All gated) | **0.00% (0 / 30)** | **0.00% (0 / 30)** |
+| **WhatsApp Photos (`--split whatsapp`)** | 2 | 100.00% (2 / 2) | N/A (Honest withhold) | **0.00% (0 / 2)** | **0.00% (0 / 2)** |
+
+### 9.4. Signal Honesty & Placeholder Elimination (`tests/test_verdict_consistency_and_models.py`)
+- **ELA & FFT Sanitization**:
+  - Tested on non-photographic certificates and flat digital art.
+  - Previous Behavior: Displayed `Score: 50%` (misleading synthetic placeholder).
+  - Phase 4 Behavior: Returns `score: None`, `applicable: False`, `status_text: "Not applicable"`. Displayed in neutral grey badge, completely excluded from fusion math.
+- **Top-Level Model Transparency**:
+  - `model_scores`, `per_model_weights`, `spread`, `min_model_score`, `max_model_score` guaranteed across all response payloads.
+  - Resolved UI bug where individual bars rendered as "No individual model scores recorded".
+- **Headline Consistency**:
+  - On model disagreement (`spread >= 0.50`), headline is strictly `"Inconclusive"`.
+  - Disagreement spread (`between X% and Y% across models`) is rendered below the headline with a visual range indicator.
+
+### 9.5. Live Server Latency, Cache Versioning & 45-Image Stress Test (`tests/test_phase4_end_to_end.py`)
+Executed on live localhost server daemon (`http://127.0.0.1:5000`):
+- **Cache Versioning**:
+  - Cache key: `sha256_hash + ":v1.0.0"`.
+  - Stored execution duration returned on cached hit: e.g., `"analyzed in 4.54 s, served from cache"`.
+  - `POST /analyze?ignore_cache=1`: Correctly bypasses cache and re-analyzes on demand in 4.39s.
+- **45-Image Mixed Sequential Stress Test**:
+  - Dataset: 45 mixed images (CIFAKE Real & AI, Midjourney Hard AI, user WhatsApp camera photos, mirror selfies, certificates, charts).
+  - Total Elapsed Time: **198.9 seconds**.
+  - Average Latency per Image: **4.42 seconds** (full multi-model CPU inference per novel image).
+  - Failures / Crashes: **0 / 45 (100.0% pass rate)**.
+

@@ -2,8 +2,21 @@
 
 Combines provenance (C2PA, EXIF/PNG metadata), physical/compression forensics
 (ELA, FFT frequency analysis), deep learning vision models (ML ensemble,
-optional Gemini layer), and deterministic image-type gating into a calibrated
+optional Gemini layer), and learned image-type gate into a calibrated
 probability or range and transparent verdict.
+
+Honesty and safety rules:
+- C2PA manifest or explicit AI metadata trace provides high-confidence provenance.
+- Soft image-type gating: scales weights of ML and forensics continuously by `photo_probability`.
+- When models disagree (spread >= 0.45) or image type is non-photo (photo_prob < 0.35)
+  or compression creates strong ambiguity, verdict is honestly routed to 'Inconclusive'.
+- Headline for Inconclusive is always 'Inconclusive' with a short reason, and below it
+  a small range indicator plus individual model scores.
+- Every result contains:
+  1. Evidence pointing to AI
+  2. Evidence pointing to real
+  3. Missing or unreliable evidence
+  4. What to do next practical guidance
 """
 from __future__ import annotations
 
@@ -45,123 +58,39 @@ def fuse_signals(
     gemini_res: Optional[Dict[str, Any]] = None,
     image_type_res: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Combines all detector signals into a calibrated verdict and probability or range.
-
-    Honesty and safety rules:
-    - Verified C2PA manifest or explicit AI metadata trace is strong evidence for AI.
-    - If image type is NOT photo-like (screenshot, document, certificate, graphic):
-      lower ML/forensics weights and push verdict to 'Inconclusive' unless hard C2PA/AI metadata exists.
-    - When ML models disagree strongly (spread >= 0.50), headline must be 'Inconclusive'
-      and percentage must be replaced by a probability RANGE (e.g. 'between 2% and 100% across models').
-    - Only show single percentage when models roughly agree.
-    - 5-level verdict spectrum:
-      'Likely AI' | 'Leaning AI' | 'Inconclusive' | 'Leaning real' | 'Likely real'
-    """
-    signals: Dict[str, Any] = {
-        "metadata": metadata_res,
-        "c2pa": c2pa_res,
-        "ela": ela_res,
-        "frequency": freq_res,
-        "ml_ensemble": ml_res,
-        "gemini": gemini_res or {"score": None, "confidence": "low", "evidence": ["Disabled"]},
-        "image_type": image_type_res or {"image_type": "photo-like", "is_photo_like": True},
+    """Combines all detector signals into an honest calibrated verdict."""
+    img_type_info = image_type_res or {
+        "photo_probability": 1.0,
+        "image_type": "photo-like",
+        "is_photo_like": True,
+        "unreliable_notice": None,
+        "notice_severity": "none",
+        "is_heavily_recompressed": False,
+        "block_ratio": 1.0,
     }
 
-    img_type_info = image_type_res or {"image_type": "photo-like", "is_photo_like": True, "unreliable_notice": None}
+    photo_prob = float(img_type_info.get("photo_probability", 1.0))
     img_type = img_type_info.get("image_type", "photo-like")
-    is_photo_like = img_type_info.get("is_photo_like", True)
+    is_photo_like = img_type_info.get("is_photo_like", photo_prob >= 0.35)
     unreliable_notice = img_type_info.get("unreliable_notice")
+    notice_severity = img_type_info.get("notice_severity", "none")
+    is_heavily_recompressed = img_type_info.get("is_heavily_recompressed", False)
+    comp_notice = img_type_info.get("compression_notice")
 
-    # 1. Hard Provenance Overrides
-    # A) Verified C2PA with AI action
-    if c2pa_res.get("score") is not None and c2pa_res["score"] >= 0.95 and c2pa_res.get("confidence") == "high":
-        prob = 0.985
-        return {
-            "ai_probability": prob,
-            "ai_percentage": 98.5,
-            "probability_display": "98.5%",
-            "verdict": "Likely AI",
-            "confidence": "high",
-            "is_inconclusive": False,
-            "summary_reason": "Cryptographically authenticated C2PA Content Credentials manifest records generative AI origin.",
-            "why_this_verdict": "Cryptographic Content Credentials (C2PA) attached to this file explicitly record generative AI synthesis. Provenance signatures cannot be forged without invalidating the cryptographic certificate.",
-            "signals": signals,
-            "spread": 0.0,
-            "min_model_score": prob,
-            "max_model_score": prob,
-            "image_type": img_type,
-            "is_photo_like": is_photo_like,
-            "unreliable_notice": None,
-            "disagreement_flag": False,
-            "fusion_mode": "cryptographic_override",
-            "honesty_note": "Estimate based on authenticated provenance. Missing metadata never proves authenticity.",
-        }
-
-    # B) Explicit AI generator metadata trace (Prompt, Model hash, Midjourney/SD headers)
-    if metadata_res.get("score") is not None and metadata_res["score"] >= 0.95 and metadata_res.get("confidence") == "high":
-        prob = 0.970
-        return {
-            "ai_probability": prob,
-            "ai_percentage": 97.0,
-            "probability_display": "97.0%",
-            "verdict": "Likely AI",
-            "confidence": "high",
-            "is_inconclusive": False,
-            "summary_reason": "Unambiguous AI generator parameters (prompt/sampler/model headers) detected in image metadata.",
-            "why_this_verdict": "Raw file metadata contains explicit generative parameters (such as diffusion prompt text, checkpoint hashes, or generation headers) confirming synthetic generation.",
-            "signals": signals,
-            "spread": 0.0,
-            "min_model_score": prob,
-            "max_model_score": prob,
-            "image_type": img_type,
-            "is_photo_like": is_photo_like,
-            "unreliable_notice": None,
-            "disagreement_flag": False,
-            "fusion_mode": "metadata_override",
-            "honesty_note": "Estimate based on file metadata. Missing metadata never proves authenticity.",
-        }
-
-    # C) Verified C2PA camera hardware signing
-    if c2pa_res.get("score") is not None and c2pa_res["score"] <= 0.08 and c2pa_res.get("confidence") == "high":
-        prob = 0.05
-        return {
-            "ai_probability": prob,
-            "ai_percentage": 5.0,
-            "probability_display": "5.0%",
-            "verdict": "Likely real",
-            "confidence": "high",
-            "is_inconclusive": False,
-            "summary_reason": "Cryptographic camera hardware signing (C2PA) confirms authentic capture origin.",
-            "why_this_verdict": "Hardware-level cryptographic signing confirms the image was captured directly by a certified camera sensor with an intact signature chain.",
-            "signals": signals,
-            "spread": 0.0,
-            "min_model_score": prob,
-            "max_model_score": prob,
-            "image_type": img_type,
-            "is_photo_like": is_photo_like,
-            "unreliable_notice": None,
-            "disagreement_flag": False,
-            "fusion_mode": "cryptographic_override",
-            "honesty_note": "Estimate based on cryptographic signature.",
-        }
-
+    # 1. Extract and standardize ML ensemble scores
     ml_score = ml_res.get("score")
-    per_model_scores = ml_res.get("per_model_scores", {})
-    if not per_model_scores and "models" in ml_res:
-        per_model_scores = {
-            k: (v.get("score") if isinstance(v, dict) else v)
-            for k, v in ml_res["models"].items()
-        }
-    valid_scores = [v for v in per_model_scores.values() if v is not None]
+    per_model_scores: Dict[str, Optional[float]] = {}
+    if "per_model_scores" in ml_res and isinstance(ml_res["per_model_scores"], dict):
+        per_model_scores = dict(ml_res["per_model_scores"])
+    elif "models" in ml_res and isinstance(ml_res["models"], dict):
+        for k, v in ml_res["models"].items():
+            per_model_scores[k] = v.get("score") if isinstance(v, dict) else v
 
+    valid_scores = [v for v in per_model_scores.values() if v is not None]
     if valid_scores:
         min_score = float(min(valid_scores))
         max_score = float(max(valid_scores))
         spread = float(max_score - min_score)
-    elif "spread" in ml_res and "min_score" in ml_res and "max_score" in ml_res:
-        min_score = float(ml_res["min_score"])
-        max_score = float(ml_res["max_score"])
-        spread = float(ml_res["spread"])
     else:
         min_score = float(ml_score) if ml_score is not None else 0.50
         max_score = float(ml_score) if ml_score is not None else 0.50
@@ -169,107 +98,294 @@ def fuse_signals(
 
     min_pct = round(min_score * 100, 1)
     max_pct = round(max_score * 100, 1)
-    range_display = f"between {min_pct:.0f}% and {max_pct:.0f}% across models"
+    range_indicator = f"Models range: {min_pct:.0f}% – {max_pct:.0f}%" if spread >= 0.15 else None
 
-    # ML Disagreement condition
-    ml_disagreement = (spread >= 0.50)
+    # Continuous reliability scaling by photo_probability
+    photo_scale = max(0.10, min(1.0, photo_prob / 0.65))
 
-    # 3. Handle Non-Photographic Images (Image-Type Gate)
-    if not is_photo_like:
-        notice_text = unreliable_notice or (
-            "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."
+    # Calculate model weights in final decision
+    num_models = len(valid_scores) if valid_scores else 1
+    base_ml_weight = 0.70 * photo_scale
+    per_model_weights = {
+        m: round(base_ml_weight / num_models, 3) for m in per_model_scores.keys()
+    }
+
+    # Ensure signals dictionary contains everything
+    signals: Dict[str, Any] = {
+        "metadata": metadata_res,
+        "c2pa": c2pa_res,
+        "ela": ela_res,
+        "frequency": freq_res,
+        "ml_ensemble": ml_res,
+        "gemini": gemini_res or {"score": None, "confidence": "low", "evidence": ["Disabled"]},
+        "image_type": img_type_info,
+    }
+    # Backward-compat helpers
+    signals["ml"] = {
+        "score": ml_score,
+        "spread": spread,
+        "models": {k: {"score": v} for k, v in per_model_scores.items()},
+    }
+
+    # 2. Build the three evidence lists
+    evidence_ai: List[str] = []
+    evidence_real: List[str] = []
+    evidence_unreliable: List[str] = []
+
+    # A) Check provenance
+    if c2pa_res.get("score") is not None and c2pa_res["score"] >= 0.90:
+        evidence_ai.append("Cryptographic C2PA manifest explicitly records generative AI synthesis.")
+    elif c2pa_res.get("score") is not None and c2pa_res["score"] <= 0.10:
+        evidence_real.append("Cryptographic C2PA hardware signing confirms authentic camera capture.")
+    else:
+        evidence_unreliable.append("No cryptographic C2PA Content Credentials manifest found (standard for web downloads and chat apps).")
+
+    # B) Check metadata
+    if metadata_res.get("score") is not None and metadata_res["score"] >= 0.90:
+        evidence_ai.append(f"AI generator metadata detected: {metadata_res.get('ai_tool_detected', 'Generative tool parameters')}.")
+    elif metadata_res.get("camera_make") or metadata_res.get("camera_model"):
+        cam = f"{metadata_res.get('camera_make', '')} {metadata_res.get('camera_model', '')}".strip()
+        evidence_real.append(f"Authentic camera hardware EXIF tags present ({cam}).")
+    else:
+        evidence_unreliable.append("No camera hardware EXIF metadata found (neutral indicator; stripped by social media / chat apps).")
+
+    # C) Check vision models
+    for m_name, m_sc in per_model_scores.items():
+        if m_sc is None:
+            continue
+        short = m_name.split("/")[-1]
+        if m_sc >= 0.75:
+            evidence_ai.append(f"{short}: {round(m_sc*100):.0f}% synthetic confidence.")
+        elif m_sc <= 0.25:
+            evidence_real.append(f"{short}: {round((1-m_sc)*100):.0f}% natural photographic confidence.")
+    if ml_score is None:
+        evidence_unreliable.append("Deep vision models are currently offline or blocked by Windows Application Control.")
+
+    # D) Check physical forensics (ELA & FFT)
+    ela_app = ela_res.get("applicable", False)
+    if ela_app and ela_res.get("score") is not None:
+        if ela_res["score"] >= 0.65:
+            evidence_ai.append(f"Elevated ELA mean error ({ela_res['metrics'].get('mean_error', 0):.1f}) deviates from standard camera JPEG equilibrium.")
+        elif ela_res["score"] <= 0.35:
+            evidence_real.append(f"Low ELA error ({ela_res['metrics'].get('mean_error', 0):.1f}) matches natural JPEG photographic equilibrium.")
+    else:
+        if not is_photo_like:
+            evidence_unreliable.append("ELA is not applicable on flat graphics, screenshots, or documents.")
+        elif is_heavily_recompressed:
+            evidence_unreliable.append("ELA excluded from fusion: severe compression macroblocks mask subtle error differentials.")
+
+    freq_app = freq_res.get("applicable", False)
+    if freq_app and freq_res.get("score") is not None:
+        if freq_res["score"] >= 0.65:
+            evidence_ai.append(f"2D FFT detected {freq_res['metrics'].get('peak_count', 0)} periodic peaks characteristic of deconvolution upsampling.")
+        elif freq_res["score"] <= 0.35:
+            evidence_real.append(f"Fourier decay slope ({freq_res['metrics'].get('decay_slope', 0):.2f}) exhibits natural optical dispersion without lattice peaks.")
+    else:
+        if not is_photo_like:
+            evidence_unreliable.append("FFT spectral peak analysis is not applicable on digital graphics or text documents.")
+
+    # E) Check image-type gate & compression
+    if photo_prob < 0.35:
+        evidence_unreliable.append(f"Non-photographic image type (photo probability: {photo_prob*100:.1f}%). Photo-trained detectors are less reliable.")
+    elif photo_prob < 0.65:
+        evidence_unreliable.append(f"Borderline image type (photo probability: {photo_prob*100:.1f}%). Reliability is lowered.")
+
+    if is_heavily_recompressed:
+        evidence_unreliable.append(f"Heavy lossy compression detected (DCT blockiness: {img_type_info.get('block_ratio', 0):.2f}). Compression artifacts destroy fine camera grain.")
+
+    if spread >= 0.45:
+        evidence_unreliable.append(f"Severe disagreement among vision models (spread: {spread*100:.0f}%). One or more detectors may be misclassifying.")
+
+    # 3. Build Actionable "What to do next" Guidance
+    what_to_do_next = [
+        {
+            "label": "Request Original File",
+            "description": "Ask the sender to share the original uncompressed photo as a 'Document' or uncompressed file (messaging apps strip EXIF and recompress).",
+            "action_type": "ask_source",
+        },
+        {
+            "label": "Reverse Image Search",
+            "description": "Check if this image was published elsewhere earlier or belongs to an existing public profile.",
+            "action_type": "reverse_search",
+            "links": [
+                {"title": "Search with Google Lens", "url": "https://lens.google.com/"},
+                {"title": "Search with TinEye", "url": "https://tineye.com/"},
+            ],
+        },
+        {
+            "label": "Verify Sender & Context",
+            "description": "Never send money, credentials, or personal information based solely on an image received online or via chat.",
+            "action_type": "caution",
+        },
+        {
+            "label": "Run Deep Check (Gemini)",
+            "description": "Use on-demand visual reasoning to inspect physical lighting consistency, anatomical realism, and reflection angles.",
+            "action_type": "deep_check",
+        },
+    ]
+
+    # 4. Hard Provenance Overrides
+    if c2pa_res.get("score") is not None and c2pa_res["score"] >= 0.95 and c2pa_res.get("confidence") == "high":
+        return _pack_verdict(
+            verdict="Likely AI",
+            headline="Likely AI",
+            prob=0.985,
+            confidence="high",
+            is_inconclusive=False,
+            summary="Cryptographically authenticated C2PA manifest records generative AI origin.",
+            why_text="Cryptographic Content Credentials (C2PA) attached to this file explicitly record generative AI synthesis. Provenance signatures cannot be forged without invalidating the certificate.",
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="cryptographic_override",
         )
-        return {
-            "ai_probability": 0.50,
-            "ai_percentage": None,  # Suppress single percentage
-            "probability_display": range_display if spread >= 0.20 else f"~{min_pct:.0f}%",
-            "verdict": "Inconclusive",
-            "confidence": "low",
-            "is_inconclusive": True,
-            "summary_reason": f"{notice_text} Classified as '{img_type}'.",
-            "why_this_verdict": (
-                f"This image was identified as a {img_type} (uniform background fills, sharp text glyphs, or window boundaries). "
-                f"Deep vision detectors trained on natural camera photographs frequently misinterpret flat digital graphics and sharp text rendering as generative diffusion artifacts. "
+
+    if metadata_res.get("score") is not None and metadata_res["score"] >= 0.95 and metadata_res.get("confidence") == "high":
+        return _pack_verdict(
+            verdict="Likely AI",
+            headline="Likely AI",
+            prob=0.970,
+            confidence="high",
+            is_inconclusive=False,
+            summary="Unambiguous AI generator parameters (prompt/sampler/model headers) detected in image metadata.",
+            why_text="Raw file metadata contains explicit generative parameters (such as diffusion prompt text, checkpoint hashes, or generation headers) confirming synthetic generation.",
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="metadata_override",
+        )
+
+    if c2pa_res.get("score") is not None and c2pa_res["score"] <= 0.08 and c2pa_res.get("confidence") == "high":
+        return _pack_verdict(
+            verdict="Likely Real",
+            headline="Likely Real",
+            prob=0.05,
+            confidence="high",
+            is_inconclusive=False,
+            summary="Cryptographic camera hardware signing (C2PA) confirms authentic capture origin.",
+            why_text="Hardware-level cryptographic signing confirms the image was captured directly by a certified camera sensor with an intact signature chain.",
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="cryptographic_override",
+        )
+
+    # 5. Non-Photo Gate Override
+    if not is_photo_like:
+        return _pack_verdict(
+            verdict="Inconclusive",
+            headline="Inconclusive",
+            prob=0.50,
+            confidence="low",
+            is_inconclusive=True,
+            summary=f"Non-photographic image type ({img_type}). Photo-trained AI detectors are unreliable for this type.",
+            why_text=(
+                f"This image was classified by the learned vision gate as a {img_type} (photo probability: {photo_prob*100:.1f}%). "
+                f"Deep vision detectors trained on camera photographs frequently misinterpret flat digital graphics and sharp text rendering as generative diffusion artifacts. "
                 f"Without cryptographic C2PA credentials or metadata traces, a definitive AI determination cannot be made."
             ),
-            "signals": signals,
-            "spread": round(spread, 3),
-            "min_model_score": round(min_score, 3),
-            "max_model_score": round(max_score, 3),
-            "image_type": img_type,
-            "is_photo_like": False,
-            "unreliable_notice": notice_text,
-            "disagreement_flag": ml_disagreement,
-            "fusion_mode": "image_type_gate",
-            "honesty_note": "Photo-trained vision detectors are unreliable for flat digital graphics, documents, and screenshots.",
-        }
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="image_type_gate",
+        )
 
-    # 4. Handle Strong ML Disagreement on Photo-Like Images
-    if ml_disagreement:
-        return {
-            "ai_probability": 0.50,
-            "ai_percentage": None,  # Suppress single percentage!
-            "probability_display": range_display,
-            "verdict": "Inconclusive",
-            "confidence": "low",
-            "is_inconclusive": True,
-            "summary_reason": f"Machine learning detectors disagree strongly (spread: {spread*100:.0f}%). One or more vision models may be producing false alarms.",
-            "why_this_verdict": (
+    # 6. Model Disagreement Guardrail
+    if spread >= 0.45:
+        return _pack_verdict(
+            verdict="Inconclusive",
+            headline="Inconclusive",
+            prob=0.50,
+            confidence="low",
+            is_inconclusive=True,
+            summary=f"Vision models disagree strongly (spread: {spread*100:.0f}%). Detectors cannot reach consensus.",
+            why_text=(
                 f"Vision classifiers disagree substantially on this image (spread: {spread*100:.0f}%). "
-                f"Individual model predictions range from {min_pct:.1f}% to {max_pct:.1f}% AI probability. "
+                f"Individual predictions range from {min_pct:.0f}% to {max_pct:.0f}% AI probability. "
                 f"This sharp conflict typically arises from compression macroblocks, heavy aperture bokeh, or out-of-distribution textures. "
-                f"Because the models cannot reach consensus, the system flags the result as Inconclusive rather than forcing a misleading single score."
+                f"Rather than forcing a guess, RealLens issues an honest Inconclusive result."
             ),
-            "signals": signals,
-            "spread": round(spread, 3),
-            "min_model_score": round(min_score, 3),
-            "max_model_score": round(max_score, 3),
-            "image_type": img_type,
-            "is_photo_like": True,
-            "unreliable_notice": None,
-            "disagreement_flag": True,
-            "fusion_mode": "disagreement_guardrail",
-            "honesty_note": "Estimate withheld due to severe detector disagreement. Manual inspection recommended.",
-        }
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="disagreement_guardrail",
+        )
 
-    # 4b. Handle Heavily Recompressed Images (WhatsApp, chat-apps, low JPEG quality)
-    is_heavily_recompressed = img_type_info.get("is_heavily_recompressed", False)
-    comp_notice = img_type_info.get("compression_notice")
-    if is_heavily_recompressed:
-        # If models do not reach overwhelming consensus (spread >= 0.25 or median in ambiguous zone [0.35, 0.65])
-        median_score = ml_score if ml_score is not None else 0.50
-        if spread >= 0.25 or (0.35 <= median_score <= 0.65):
-            summary_comp = comp_notice or (
-                "Heavy lossy recompression detected (e.g. WhatsApp, chat app, or low JPEG quality). "
-                "Compression artifacts obscure subtle sensor noise and generative textures."
-            )
-            return {
-                "ai_probability": 0.50,
-                "ai_percentage": None,  # Suppress single percentage!
-                "probability_display": range_display,
-                "verdict": "Inconclusive",
-                "confidence": "low (heavy recompression)",
-                "is_inconclusive": True,
-                "summary_reason": summary_comp,
-                "why_this_verdict": (
-                    f"This image shows clear evidence of lossy compression (such as WhatsApp/social messaging export, downscaling, or low JPEG quality). "
-                    f"Compression macroblocks and quantization noise destroy fine camera sensor noise and soften generative artifacts. "
-                    f"Because model predictions span from {min_pct:.0f}% to {max_pct:.0f}% (spread: {spread*100:.0f}%), RealLens refuses to force an unreliable guess and issues an honest Inconclusive verdict."
-                ),
-                "signals": signals,
-                "spread": round(spread, 3),
-                "min_model_score": round(min_score, 3),
-                "max_model_score": round(max_score, 3),
-                "image_type": img_type,
-                "is_photo_like": True,
-                "is_heavily_recompressed": True,
-                "unreliable_notice": summary_comp,
-                "disagreement_flag": ml_disagreement or (spread >= 0.25),
-                "fusion_mode": "compression_awareness_guardrail",
-                "honesty_note": "Estimate withheld due to heavy compression ambiguity. Never return confident verdicts on heavily compressed images without proof.",
-            }
+    # 7. Heavy Compression Ambiguity Guardrail
+    if is_heavily_recompressed and (spread >= 0.25 or (0.35 <= (ml_score or 0.50) <= 0.65)):
+        return _pack_verdict(
+            verdict="Inconclusive",
+            headline="Inconclusive",
+            prob=0.50,
+            confidence="low",
+            is_inconclusive=True,
+            summary="Lossy recompression artifacts obscure subtle sensor noise and textures.",
+            why_text=(
+                f"This image shows clear evidence of lossy compression (such as WhatsApp/social messaging export, downscaling, or low JPEG quality). "
+                f"Compression macroblocks and quantization noise destroy fine camera sensor noise and soften generative artifacts. "
+                f"Because model predictions span from {min_pct:.0f}% to {max_pct:.0f}%, RealLens issues an honest Inconclusive verdict."
+            ),
+            signals=signals,
+            model_scores=per_model_scores,
+            model_weights=per_model_weights,
+            spread=spread,
+            min_score=min_score,
+            max_score=max_score,
+            range_indicator=range_indicator,
+            evidence_ai=evidence_ai,
+            evidence_real=evidence_real,
+            evidence_unreliable=evidence_unreliable,
+            what_to_do_next=what_to_do_next,
+            image_type_info=img_type_info,
+            fusion_mode="compression_awareness_guardrail",
+        )
 
-    # 5. Agreement Case: Calibrated Single Probability
+    # 8. Agreeing Photographic Case: Fusion Stacker / Weighted Mean
     stacker = get_learned_stacker()
     fused_prob = None
     fusion_mode = "hand_weighted_fallback"
@@ -282,8 +398,8 @@ def fuse_signals(
             s_probe = per_model_scores.get("generalizing_dinov2_probe", 0.50) or 0.50
             s_med = float(ml_score) if ml_score is not None else 0.50
             s_spread = spread
-            ela_s = ela_res.get("score", 0.50) if ela_res.get("score") is not None else 0.50
-            freq_s = freq_res.get("score", 0.50) if freq_res.get("score") is not None else 0.50
+            ela_s = ela_res.get("score", 0.50) if (ela_app and ela_res.get("score") is not None) else 0.50
+            freq_s = freq_res.get("score", 0.50) if (freq_app and freq_res.get("score") is not None) else 0.50
             meta_score = metadata_res.get("score")
             has_meta_cam = 1.0 if (meta_score is not None and meta_score <= 0.20) else 0.0
             c2pa_ai = 1.0 if (c2pa_res.get("score") is not None and c2pa_res["score"] >= 0.80) else 0.0
@@ -303,93 +419,148 @@ def fuse_signals(
             fused_prob = None
 
     if fused_prob is None:
-        weights = {"ml": 0.70}
-        values = {"ml": float(ml_score) if ml_score is not None else 0.50}
+        weights = {}
+        values = {}
+        if ml_score is not None:
+            weights["ml"] = 0.70 * photo_scale
+            values["ml"] = float(ml_score)
 
         meta_score = metadata_res.get("score")
         if meta_score is not None:
             weights["metadata"] = 0.15
             values["metadata"] = float(meta_score)
 
-        ela_score = ela_res.get("score")
-        if ela_score is not None:
-            weights["ela"] = 0.15
-            values["ela"] = float(ela_score)
+        if ela_app and ela_res.get("score") is not None:
+            weights["ela"] = 0.15 * photo_scale
+            values["ela"] = float(ela_res["score"])
 
-        freq_score = freq_res.get("score")
-        if freq_score is not None:
-            weights["frequency"] = 0.15
-            values["frequency"] = float(freq_score)
-
-        if gemini_res and gemini_res.get("score") is not None:
-            weights["gemini"] = 0.15
-            values["gemini"] = float(gemini_res["score"])
+        if freq_app and freq_res.get("score") is not None:
+            weights["frequency"] = 0.15 * photo_scale
+            values["frequency"] = float(freq_res["score"])
 
         total_weight = sum(weights.values())
-        fused_prob = sum(values[k] * weights[k] for k in weights) / total_weight if total_weight > 0 else 0.50
-        fusion_mode = "hand_weighted_fallback"
+        fused_prob = sum(values[k] * weights[k] for k in weights) / max(1e-4, total_weight)
 
-    fused_prob = max(0.04, min(0.96, fused_prob))
+    fused_prob = max(0.04, min(0.96, float(fused_prob)))
     pct = round(fused_prob * 100, 1)
 
-    # Verdict Spectrum: honest 5-band handling ensuring no forced guesses around 50%
+    # 5-Band Honest Spectrum
     if 0.45 <= fused_prob <= 0.55:
         verdict = "Inconclusive"
-        confidence = "low"
-        summary = "Model scores hover around the 50% decision boundary with no decisive consensus."
-        why_text = (
-            f"Active detectors and forensic signals remain evenly balanced near 50% ({pct}% AI probability). "
-            f"Without cryptographic Content Credentials or clear generative artifacts, RealLens issues an honest "
-            f"Inconclusive verdict rather than forcing an arbitrary determination."
-        )
-        is_inconclusive = True
-        prob_disp = range_display if spread >= 0.20 else f"{pct}%"
+        headline = "Inconclusive"
+        conf = "low"
+        summary = "Model scores hover around 50% with no decisive consensus."
+        why_text = f"Forensic signals remain evenly balanced ({pct}% AI probability). RealLens refuses to force a guess."
+        is_incon = True
     elif fused_prob >= 0.65:
         verdict = "Likely AI"
-        confidence = "high" if fused_prob >= 0.85 else "medium"
-        summary = "Consistent AI visual characteristics and artifact patterns identified across detectors."
-        why_text = "Vision models demonstrate strong agreement on synthetic diffusion textures, supported by spectral frequency patterns consistent with generative upsampling."
-        is_inconclusive = False
-        prob_disp = f"{pct}%"
+        headline = f"Likely AI ({pct:.0f}%)"
+        conf = "high" if fused_prob >= 0.82 else "medium"
+        summary = "Consistent AI visual characteristics and synthetic artifact patterns identified."
+        why_text = "Vision models and physical forensics agree on synthetic generative origin."
+        is_incon = False
     elif fused_prob > 0.55:
         verdict = "Leaning AI"
-        confidence = "medium" if fused_prob >= 0.60 else "low"
-        summary = "Subtle generative cues observed across vision models."
-        why_text = "Detector consensus leans toward AI synthesis, though lack of cryptographic provenance and residual compression noise prevent a definitive determination."
-        is_inconclusive = False
-        prob_disp = f"{pct}%"
+        headline = f"Leaning AI ({pct:.0f}%)"
+        conf = "medium" if fused_prob >= 0.60 else "low"
+        summary = "Subtle generative cues observed, but confidence is limited."
+        why_text = "Signals lean toward AI generation, but residual compression leaves slight ambiguity."
+        is_incon = False
     elif fused_prob >= 0.35:
         verdict = "Leaning Real"
-        confidence = "medium" if fused_prob <= 0.40 else "low"
-        summary = "Primarily natural characteristics, though compression leaves slight ambiguity."
-        why_text = "Image exhibits photographic characteristics and natural spectral decay, though compression re-encoding leaves minor residual uncertainty."
-        is_inconclusive = False
-        prob_disp = f"{pct}%"
+        headline = f"Leaning Real ({100-pct:.0f}%)"
+        conf = "medium" if fused_prob <= 0.40 else "low"
+        summary = "Primarily natural characteristics, though compression leaves minor uncertainty."
+        why_text = "Image exhibits photographic characteristics and natural spectral properties."
+        is_incon = False
     else:
         verdict = "Likely Real"
-        confidence = "high" if fused_prob <= 0.18 else "medium"
-        summary = "Photographic sensor noise characteristics, natural spectral decay, and vision models align with authentic origin."
-        why_text = "All active vision models agree on authentic photographic origin. Natural camera sensor noise floor, Fourier spectral slope, and compression characteristics align with real-world capture."
-        is_inconclusive = False
-        prob_disp = f"{pct}%"
+        headline = f"Likely Real ({100-pct:.0f}%)"
+        conf = "high" if fused_prob <= 0.18 else "medium"
+        summary = "Photographic sensor noise and vision models align with authentic origin."
+        why_text = "All active vision models agree on authentic photographic origin."
+        is_incon = False
+
+    return _pack_verdict(
+        verdict=verdict,
+        headline=headline,
+        prob=fused_prob,
+        confidence=conf,
+        is_inconclusive=is_incon,
+        summary=summary,
+        why_text=why_text,
+        signals=signals,
+        model_scores=per_model_scores,
+        model_weights=per_model_weights,
+        spread=spread,
+        min_score=min_score,
+        max_score=max_score,
+        range_indicator=range_indicator,
+        evidence_ai=evidence_ai,
+        evidence_real=evidence_real,
+        evidence_unreliable=evidence_unreliable,
+        what_to_do_next=what_to_do_next,
+        image_type_info=img_type_info,
+        fusion_mode=fusion_mode,
+    )
+
+
+def _pack_verdict(
+    verdict: str,
+    headline: str,
+    prob: float,
+    confidence: str,
+    is_inconclusive: bool,
+    summary: str,
+    why_text: str,
+    signals: Dict[str, Any],
+    model_scores: Dict[str, Optional[float]],
+    model_weights: Dict[str, float],
+    spread: float,
+    min_score: float,
+    max_score: float,
+    range_indicator: Optional[str],
+    evidence_ai: List[str],
+    evidence_real: List[str],
+    evidence_unreliable: List[str],
+    what_to_do_next: List[Dict[str, Any]],
+    image_type_info: Dict[str, Any],
+    fusion_mode: str,
+) -> Dict[str, Any]:
+    """Helper to assemble standard, comprehensive result dictionary."""
+    pct = round(prob * 100, 1)
+    prob_display = f"{pct:.1f}%" if not is_inconclusive else (
+        range_indicator if range_indicator else "50%"
+    )
 
     return {
-        "ai_probability": round(fused_prob, 3),
-        "ai_percentage": pct if not is_inconclusive else None,
-        "probability_display": prob_disp,
         "verdict": verdict,
+        "headline": headline,
+        "ai_probability": round(prob, 3),
+        "ai_percentage": pct if not is_inconclusive else None,
+        "probability_display": prob_display,
+        "range_indicator": range_indicator,
         "confidence": confidence,
         "is_inconclusive": is_inconclusive,
         "summary_reason": summary,
         "why_this_verdict": why_text,
-        "signals": signals,
+        "model_scores": model_scores,
+        "per_model_weights": model_weights,
         "spread": round(spread, 3),
         "min_model_score": round(min_score, 3),
         "max_model_score": round(max_score, 3),
-        "image_type": img_type,
-        "is_photo_like": True,
-        "unreliable_notice": None,
-        "disagreement_flag": False,
+        "evidence_pointing_to_ai": evidence_ai,
+        "evidence_pointing_to_real": evidence_real,
+        "missing_or_unreliable_evidence": evidence_unreliable,
+        "what_to_do_next": what_to_do_next,
+        "signals": signals,
+        "image_type": image_type_info.get("image_type", "photo-like"),
+        "is_photo_like": image_type_info.get("is_photo_like", True),
+        "photo_probability": image_type_info.get("photo_probability", 1.0),
+        "unreliable_notice": image_type_info.get("unreliable_notice"),
+        "notice_severity": image_type_info.get("notice_severity", "none"),
+        "is_heavily_recompressed": image_type_info.get("is_heavily_recompressed", False),
+        "block_ratio": image_type_info.get("block_ratio", 1.0),
         "fusion_mode": fusion_mode,
-        "honesty_note": "Estimate only, not proof. Missing metadata never proves an image is real.",
+        "honesty_note": "Estimate only, accompanied by detector evidence. Missing metadata never proves authenticity.",
     }

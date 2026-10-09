@@ -121,38 +121,57 @@ def analyze_ela(
             "high_error_ratio": round(high_error_ratio, 4),
         }
 
-        # If image is non-photographic (e.g. screenshot, document, graphic), ELA is not meaningful
+        # If image is non-photographic, heavily recompressed, or too small, ELA is not applicable
+        w_orig, h_orig = work_img.size
+        is_too_small = (w_orig < 64 or h_orig < 64)
+
         if image_type != "photo-like":
-            score = 0.50
+            score = None
+            applicable = False
+            status_text = "Not applicable"
             confidence = "low"
             evidence.append(
-                f"Image classified as '{image_type}'. Error Level Analysis is not meaningful for non-photographic, flat graphics or screenshots."
+                f"Image classified as '{image_type}'. Error Level Analysis is not applicable for non-photographic graphics or documents."
             )
+        elif is_too_small:
+            score = None
+            applicable = False
+            status_text = "Not applicable"
+            confidence = "low"
+            evidence.append("Image resolution is too small (<64px) for reliable Error Level Analysis.")
         elif mean_error > 9.5:
             score = min(0.85, 0.5 + (mean_error - 9.5) * 0.035)
+            applicable = True
+            status_text = f"Elevated error ({round(score*100):.0f}%)"
             evidence.append(
                 f"Elevated ELA mean error ({mean_error:.2f}) indicates image has not undergone standard camera JPEG compression equilibrium."
             )
             confidence = "medium"
         elif mean_error < 4.5:
             score = max(0.15, 0.5 - (4.5 - mean_error) * 0.06)
+            applicable = True
+            status_text = f"Low error ({round(score*100):.0f}%)"
             evidence.append(
                 f"Low ELA error ({mean_error:.2f}) consistent with previously compressed natural JPEG photographic content."
             )
             confidence = "medium"
         else:
-            score = 0.50
-            evidence.append(
-                f"Moderate ELA error ({mean_error:.2f}, std: {std_error:.2f}) - neutral compression artifact profile."
-            )
+            score = None
+            applicable = False
+            status_text = "Not applicable"
             confidence = "low"
+            evidence.append(
+                f"Moderate ELA error ({mean_error:.2f}, std: {std_error:.2f}) - neutral compression profile without clear synthetic or camera deviation."
+            )
 
         evidence.append(
             f"High-error pixel ratio: {high_error_ratio*100:.1f}%, max differential: {max_error:.1f}."
         )
 
         return {
-            "score": round(score, 3),
+            "score": round(score, 3) if score is not None else None,
+            "applicable": applicable,
+            "status_text": status_text,
             "confidence": confidence,
             "evidence": evidence,
             "metrics": metrics,

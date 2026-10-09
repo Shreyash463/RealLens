@@ -41,6 +41,7 @@ def _compute_radial_profile(log_power: np.ndarray, center: Tuple[int, int]) -> T
 def analyze_frequency(
     image_source: Union[str, Path, bytes, Image.Image],
     target_dim: int = 512,
+    image_type: str = "photo-like",
 ) -> Dict[str, Any]:
     """Performs FFT spectral analysis on the image.
 
@@ -146,30 +147,45 @@ def analyze_frequency(
         # Scoring logic:
         # Natural photographic images have smooth decay slopes (typically 1.4 to 2.8) and virtually 0 isolated spectral peaks.
         # GAN and diffusion upsamplers create discrete peaks (peak_count > 15) or unnaturally steep/flat slopes.
-        score = 0.50
-        conf = "low"
-
-        if peak_count > 25:
+        if image_type != "photo-like":
+            score = None
+            applicable = False
+            status_text = "Not applicable"
+            conf = "low"
+            evidence.append(
+                f"Image classified as '{image_type}'. 2D FFT spectral peak analysis is not applicable for non-photographic graphics or documents."
+            )
+        elif peak_count > 25:
             score = min(0.88, 0.55 + 0.01 * (peak_count - 25))
+            applicable = True
+            status_text = f"Anomalous peaks ({round(score*100):.0f}%)"
             conf = "medium"
             evidence.append(
                 f"Detected {peak_count} anomalous spectral peaks in 2D FFT, characteristic of neural upsampling/deconvolution grid artifacts."
             )
         elif peak_count < 8 and 1.3 <= decay_slope <= 2.6:
             score = max(0.20, 0.45 - 0.15)
+            applicable = True
+            status_text = f"Natural spectrum ({round(score*100):.0f}%)"
             conf = "medium"
             evidence.append(
                 f"Spectral decay slope ({decay_slope:.2f}) and clean Fourier domain are consistent with natural photographic optical dispersion."
             )
         else:
+            score = None
+            applicable = False
+            status_text = "Not applicable"
+            conf = "low"
             evidence.append(
-                f"Fourier spectrum shows moderate profile (slope: {decay_slope:.2f}, {peak_count} outlier peaks)."
+                f"Fourier spectrum shows moderate profile (slope: {decay_slope:.2f}, {peak_count} peaks) without definitive synthetic lattice artifacts."
             )
 
         evidence.append(f"High-frequency octave power ratio: {hf_ratio*100:.1f}%.")
 
         return {
-            "score": round(score, 3),
+            "score": round(score, 3) if score is not None else None,
+            "applicable": applicable,
+            "status_text": status_text,
             "confidence": conf,
             "evidence": evidence,
             "metrics": metrics,

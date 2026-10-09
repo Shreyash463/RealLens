@@ -173,3 +173,48 @@ This log documents every iteration of the tuning and optimization loop conducted
   - Headless Chromium on Windows enforces a minimum OS window width of 489px, causing window-size flags like 390x844 to render at 489px width and clip.
   - Driving Chrome DevTools Protocol (`Emulation.setDeviceMetricsOverride` 390x844 mobile) enabled true mobile viewport rendering.
   - Adding `<colgroup>` with explicit pixel widths and `min-width: 0` on CSS grid column containers eliminated table blowout and column overlapping across 1920x1080, 1366x768, and 390x844.
+
+---
+
+# Phase 4 Self-Improvement Loop: Learned Gate, Transparent Scores & Cache Versioning
+
+## Iteration 14: Learned Photo-vs-Non-Photo Gate (`models/photo_vs_non_photo_gate.joblib`) (Kept!)
+- **Problem**: A WhatsApp photo (720x1600, 51.9 KB) of a person in a yellow hoodie taking a mirror selfie was misclassified as "flat graphic/illustration", displaying a warning that photo-trained detectors are unreliable and suppressing the models.
+- **Root Cause**: The hand-crafted heuristic gate relied on aspect ratio (punishing 720x1600 tall mobile crops), raw unique color counts, and simple thresholding. In compressed chat-app photos, 4:2:0 chroma subsampling and indoor mirror selfies naturally have fewer distinct color bins and tall aspect ratios. Aspect ratios and low color counts must NEVER trigger a non-photo classification alone.
+- **Change**:
+  1. Replaced hand-crafted rules with a learned classification pipeline trained on 813 samples (528 photographic samples including compressed WhatsApp crops and selfies, 285 non-photo samples including certificates, slides, charts, and graphics).
+  2. Extracted frozen 384-d embeddings from `facebook/dinov2-small` concatenated with 8 engineered visual features: flat patch fraction, noise variance, white paper dominance, edge sharpness, DCT blockiness ratio, color saturation, and color entropy.
+  3. Trained a regularized Logistic Regression model with probability calibration outputting a soft `photo_probability`.
+- **Results**:
+  - Held-out validation accuracy: **99.43%** (174 / 175 correct), F1: **0.9948**.
+  - Recall on WhatsApp / compressed photos: **100.00%** (128 / 128 photos correctly flagged photo-like).
+  - Recall on non-photo graphics / certificates: **100.00%** (57 / 57 non-photos caught).
+  - User's WhatsApp mirror selfie (`720x1600`, 51.9 KB): `photo_probability: 0.964` (`photo-like`), 0 false warning notices.
+
+## Iteration 15: Frontend-Backend Key Normalization & Forensic Placeholder Elimination (Kept!)
+- **Problem**:
+  1. The detail view displayed "No individual model scores recorded" even when the headline mentioned model score spreads.
+  2. ELA and FFT displayed "Score: 50%" when not applicable.
+  3. The headline for inconclusive results showed strings like "between 0% and 98% across models" instead of a clear verdict.
+- **Root Cause**:
+  1. Frontend looked for `r.signals.ml.models` whereas backend returned `r.signals.ml_ensemble.per_model_scores`.
+  2. When ELA or FFT was not applicable (e.g. non-photos or uncompressed formats), a fallback `score: 0.50` was emitted, giving users the false impression that forensic variance had been detected.
+  3. Range strings were used as verdict headlines.
+- **Change**:
+  1. Normalized backend responses to guarantee top-level `model_scores`, `per_model_weights`, `spread`, `min_model_score`, `max_model_score`.
+  2. ELA and FFT now return `score: None`, `applicable: False`, `status_text: "Not applicable"`. Frontend renders these with a neutral grey badge, completely excluded from fusion.
+  3. Inconclusive headline is strictly `"Inconclusive"`; the spread range is rendered below with a visual range bar.
+
+## Iteration 16: Pipeline-Versioned Memory Cache & On-Demand Bypass (Kept!)
+- **Problem**:
+  1. The in-memory cache had no versioning. When code or models changed, stale cached results survived.
+  2. Cached results reported `<2ms (cached)` without indicating how long analysis originally took.
+  3. No mechanism existed for users to force a fresh re-analysis without restarting the server.
+- **Change**:
+  1. Added `PIPELINE_VERSION = "v1.0.0"`. Cache keys are now formatted as `f"{file_hash}:{PIPELINE_VERSION}"`.
+  2. Cache clears completely on server boot.
+  3. Cached payloads store `original_time_taken_seconds` and return duration as `"analyzed in X.X s, served from cache"`.
+  4. Added `POST /analyze?ignore_cache=1` and a frontend `🔄 Re-run (ignore cache)` button.
+- **Validation**:
+  - `tests/test_phase4_end_to_end.py` passed with 100% success rate across 45 mixed images.
+

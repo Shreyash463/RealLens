@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RealLens - AI Image Forensics & Provenance Engine</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=1.0.0">
 </head>
 <body>
   <div class="app-layout">
@@ -16,13 +16,21 @@
           <div>
             <div class="brand-row">
               <h1 class="brand-title">RealLens</h1>
-              <span class="badge-phase">Phase 3</span>
+              <span class="badge-phase">v1.0</span>
             </div>
             <div class="brand-subtitle">Multi-Signal Provenance, Forensic ELA & Deep Vision Classifier</div>
           </div>
         </div>
 
         <div class="header-status">
+          <div id="version-pill" class="status-pill">
+            <span class="status-dot green"></span>
+            <span id="version-text">Pipeline: v1.0.0</span>
+          </div>
+          <div id="models-pill" class="status-pill">
+            <span class="status-dot blue"></span>
+            <span id="models-text">Models: 4/4 Loaded</span>
+          </div>
           <div id="device-pill" class="status-pill">
             <span class="status-dot green"></span>
             <span id="device-text">Device: Checking...</span>
@@ -64,6 +72,15 @@
                 Paste from clipboard (<kbd>Ctrl</kbd>+<kbd>V</kbd>) or drop folders • Up to 50 images, 25MB each
               </div>
               <input type="file" id="file-input" multiple accept="image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff" style="display: none;">
+            </div>
+
+            <!-- Auto-analyze Option Toggle -->
+            <div class="auto-analyze-row">
+              <label class="switch-container" for="auto-analyze-toggle" title="Automatically start forensic analysis immediately upon adding images">
+                <input type="checkbox" id="auto-analyze-toggle" checked>
+                <span class="switch-slider"></span>
+                <span class="switch-label-text">⚡ Auto-analyze on upload</span>
+              </label>
             </div>
 
             <!-- Queue Control Bar -->
@@ -246,12 +263,38 @@
                 </div>
 
                 <div class="detail-header-actions">
+                  <button id="rerun-btn" class="btn btn-secondary btn-sm" title="Re-run analysis ignoring cache">
+                    🔄 Re-run
+                  </button>
                   <button id="copy-report-btn" class="btn btn-secondary btn-sm">
                     📋 Copy Report
                   </button>
                   <button id="deep-check-gemini-btn" class="btn btn-gradient btn-sm">
                     ✨ Deep Check (Gemini)
                   </button>
+                </div>
+              </div>
+
+              <!-- 1. Big Verdict Card -->
+              <div id="big-verdict-box" class="verdict-banner">
+                <div class="verdict-banner-inner">
+                  <div class="verdict-tag-line">
+                    <span id="verdict-badge-main" class="verdict-badge verdict-inconclusive">Inconclusive</span>
+                    <span id="confidence-badge-main" class="confidence-badge conf-low">Low Confidence</span>
+                  </div>
+                  <div id="verdict-score-display" class="verdict-score-display">
+                    Inconclusive
+                  </div>
+                  <div id="verdict-summary-line" class="verdict-summary-line">
+                    Analyzing signals...
+                  </div>
+
+                  <!-- Compact Notice Chips Row -->
+                  <div id="verdict-notices-row" class="verdict-notices-row">
+                    <span id="notice-chip-type" class="notice-chip chip-type">Photo-like</span>
+                    <span id="notice-chip-compression" class="notice-chip chip-compression" style="display: none;">Lossy Recompression</span>
+                    <span id="notice-chip-range" class="notice-chip chip-range">Spread: 0.0%</span>
+                  </div>
                 </div>
               </div>
 
@@ -277,23 +320,7 @@
                 </div>
               </div>
 
-              <!-- Big Verdict Card -->
-              <div id="big-verdict-box" class="verdict-banner">
-                <div class="verdict-banner-inner">
-                  <div class="verdict-tag-line">
-                    <span id="verdict-badge-main" class="verdict-badge verdict-inconclusive">Inconclusive</span>
-                    <span id="confidence-badge-main" class="confidence-badge conf-low">Low Confidence</span>
-                  </div>
-                  <div id="verdict-score-display" class="verdict-score-display">
-                    between 35% and 70% across models
-                  </div>
-                  <div id="verdict-summary-line" class="verdict-summary-line">
-                    Analyzing signals...
-                  </div>
-                </div>
-              </div>
-
-              <!-- "Why this verdict?" Box -->
+              <!-- 2. "Why this verdict?" Box -->
               <div class="why-verdict-container">
                 <div class="why-verdict-title">
                   <span class="why-icon">💡</span>
@@ -304,7 +331,80 @@
                 </p>
               </div>
 
-              <!-- Individual Model Predictions & Spread -->
+              <!-- 3. Three Evidence Lists -->
+              <div class="detail-section evidence-section">
+                <div class="section-header">
+                  <h4 class="section-title">Forensic Evidence Breakdown</h4>
+                </div>
+                <div class="evidence-lists-grid">
+                  <!-- Evidence pointing to AI -->
+                  <div class="evidence-card evidence-ai-card">
+                    <div class="evidence-card-header">
+                      <div class="evidence-header-left">
+                        <span class="evidence-icon">🚨</span>
+                        <strong class="evidence-title">Evidence pointing to AI</strong>
+                      </div>
+                      <span id="badge-ai-count" class="evidence-count-badge ai">0</span>
+                    </div>
+                    <ul id="evidence-ai-list" class="evidence-ul">
+                      <li class="evidence-empty-item">None observed</li>
+                    </ul>
+                  </div>
+
+                  <!-- Evidence pointing to Real -->
+                  <div class="evidence-card evidence-real-card">
+                    <div class="evidence-card-header">
+                      <div class="evidence-header-left">
+                        <span class="evidence-icon">✅</span>
+                        <strong class="evidence-title">Evidence pointing to Real</strong>
+                      </div>
+                      <span id="badge-real-count" class="evidence-count-badge real">0</span>
+                    </div>
+                    <ul id="evidence-real-list" class="evidence-ul">
+                      <li class="evidence-empty-item">None observed</li>
+                    </ul>
+                  </div>
+
+                  <!-- Missing or Unreliable Evidence -->
+                  <div class="evidence-card evidence-unreliable-card">
+                    <div class="evidence-card-header">
+                      <div class="evidence-header-left">
+                        <span class="evidence-icon">⚠️</span>
+                        <strong class="evidence-title">Missing or Unreliable Evidence</strong>
+                      </div>
+                      <span id="badge-unreliable-count" class="evidence-count-badge warn">0</span>
+                    </div>
+                    <ul id="evidence-unreliable-list" class="evidence-ul">
+                      <li class="evidence-empty-item">None observed</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 4. "What to do next" Card -->
+              <div class="detail-section what-next-section">
+                <div class="what-next-card">
+                  <div class="what-next-header">
+                    <div class="what-next-title-group">
+                      <span class="what-next-icon">🧭</span>
+                      <h4 class="what-next-title">What to do next</h4>
+                    </div>
+                    <div class="reverse-search-actions">
+                      <a id="btn-google-lens" href="https://lens.google.com/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn">
+                        🔍 Search on Google Lens
+                      </a>
+                      <a id="btn-tineye" href="https://tineye.com/" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-xs search-btn">
+                        🔎 Search on TinEye
+                      </a>
+                    </div>
+                  </div>
+                  <div id="what-next-checklist" class="what-next-checklist">
+                    <!-- Injected via JavaScript -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- 5. Individual Model Predictions & Spread -->
               <div class="detail-section">
                 <div class="section-header">
                   <h4 class="section-title">Individual Model Predictions & Spread</h4>
@@ -518,11 +618,11 @@
     <!-- Footer -->
     <footer class="app-footer">
       <div class="footer-container">
-        <span>RealLens Forensic Engine • Privacy-Preserving Local Inference • Phase 3 Architecture</span>
+        <span>RealLens Forensic Engine • Privacy-Preserving Local Inference • v1.0 Architecture</span>
       </div>
     </footer>
   </div>
 
-  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/main.js') }}?v=1.0.0"></script>
 </body>
 </html>

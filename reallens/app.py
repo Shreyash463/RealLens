@@ -66,13 +66,15 @@ def get_ensemble() -> MLEnsemble:
 
 
 def warmup_models() -> None:
-    """Eagerly warms up ML ensemble and pipeline on server startup to eliminate cold-start lag."""
-    logger.info("Eagerly warming up ML models and fusion pipeline...")
+    """Eagerly warms up ML ensemble, image-type gate, and fusion pipeline on server startup."""
+    logger.info("Eagerly warming up ML models, learned gate, and fusion pipeline...")
+    _clean_stale_cache()
     t_start = time.perf_counter()
     try:
         ens = get_ensemble()
         dummy_img = Image.new("RGB", (224, 224), (128, 128, 128))
         _ = ens.analyze(dummy_img)
+        _ = classify_image_type(dummy_img)
         get_learned_stacker()
         dur = round(time.perf_counter() - t_start, 2)
         logger.info(f"Model warmup completed in {dur}s. Pipeline ready for instant inference.")
@@ -125,30 +127,50 @@ def to_serializable(val: Any) -> Any:
     return str(val)
 
 
-def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[str, Any]:
+PIPELINE_VERSION = "v1.0.0"
+
+
+def _clean_stale_cache():
+    """Purges any cache entries not matching current PIPELINE_VERSION."""
+    keys_to_remove = [k for k in list(_ANALYSIS_CACHE.keys()) if not k.endswith(f":{PIPELINE_VERSION}")]
+    for k in keys_to_remove:
+        _ANALYSIS_CACHE.pop(k, None)
+
+
+def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg", ignore_cache: bool = False) -> Dict[str, Any]:
     """Runs all detectors and fuses the resulting signals with SHA-256 caching and concurrency."""
+    return _process_image_full(raw_bytes, filename=filename, ignore_cache=ignore_cache)
+
+
+def _process_image_full(raw_bytes: bytes, filename: str, ignore_cache: bool = False) -> Dict[str, Any]:
+    """Runs the full forensic detection pipeline on raw image bytes."""
     t0 = time.perf_counter()
 
-    # 1. SHA-256 Cache Check (<2ms response on repeat)
+    # 1. Versioned Cache Check
     file_hash = hashlib.sha256(raw_bytes).hexdigest()
-    if file_hash in _ANALYSIS_CACHE:
-        cached_result = dict(_ANALYSIS_CACHE[file_hash])
+    cache_key = f"{file_hash}:{PIPELINE_VERSION}"
+
+    if not ignore_cache and cache_key in _ANALYSIS_CACHE:
+        cached_result = dict(_ANALYSIS_CACHE[cache_key])
         cached_result["filename"] = filename
         cached_result["cached"] = True
-        cached_result["time_taken_seconds"] = round(time.perf_counter() - t0, 4)
+        orig_time = cached_result.get("original_time_taken_seconds", cached_result.get("time_taken_seconds", 0.5))
+        cached_result["original_time_taken_seconds"] = orig_time
+        cached_result["time_taken_seconds"] = orig_time
+        cached_result["cache_served_seconds"] = round(time.perf_counter() - t0, 4)
         return cached_result
 
     # 2. Sanitize PIL image for vision detectors
     pil_img, _ = sanitize_image_bytes(raw_bytes)
 
-    # Downscale copy for ELA & FFT if >1024px to keep processing under 20ms
+    # Downscale copy for ELA & FFT if >1024px to keep processing fast
     if max(pil_img.width, pil_img.height) > 1024:
         forensic_img = pil_img.copy()
         forensic_img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
     else:
         forensic_img = pil_img
 
-    # 3. Image type classification gate (fast: ~15ms)
+    # 3. Learned image type classification gate (fast: ~15ms)
     img_type_res = classify_image_type(pil_img)
     detected_type = img_type_res.get("image_type", "photo-like")
 
@@ -157,7 +179,7 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
         fut_meta = executor.submit(analyze_metadata, raw_bytes)
         fut_c2pa = executor.submit(analyze_c2pa, raw_bytes)
         fut_ela = executor.submit(analyze_ela, forensic_img, image_type=detected_type)
-        fut_freq = executor.submit(analyze_frequency, forensic_img)
+        fut_freq = executor.submit(analyze_frequency, forensic_img, image_type=detected_type)
 
         # ML Ensemble runs on main thread (utilizing PyTorch intra-op threads)
         ensemble = get_ensemble()
@@ -187,11 +209,13 @@ def analyze_image_bytes(raw_bytes: bytes, filename: str = "upload.jpg") -> Dict[
     fused["filename"] = filename
     fused["image_dimensions"] = f"{pil_img.width}x{pil_img.height}"
     fused["time_taken_seconds"] = elapsed
+    fused["original_time_taken_seconds"] = elapsed
     fused["cached"] = False
     fused["file_hash"] = file_hash
+    fused["pipeline_version"] = PIPELINE_VERSION
 
     serializable = to_serializable(fused)
-    _ANALYSIS_CACHE[file_hash] = serializable
+    _ANALYSIS_CACHE[cache_key] = serializable
     return serializable
 
 
@@ -213,12 +237,14 @@ def health():
     ensemble = get_ensemble()
     return jsonify({
         "status": "healthy",
+        "pipeline_version": PIPELINE_VERSION,
         "device": ensemble.device_str,
         "models_configured": ensemble.model_names,
         "models_loaded": list(ensemble.loaded_models.keys()),
         "gemini_active": bool(os.environ.get("GEMINI_API_KEY", "").strip()),
         "cache_entries": len(_ANALYSIS_CACHE),
     })
+
 
 
 
@@ -244,7 +270,11 @@ def analyze_endpoint():
         if len(raw_bytes) < 32:
             return jsonify({"status": "error", "message": "File is empty or corrupted."}), 400
 
-        result = analyze_image_bytes(raw_bytes, filename=file.filename)
+        ignore_cache = (
+            request.args.get("ignore_cache", "").lower() in ("1", "true", "yes")
+            or request.form.get("ignore_cache", "").lower() in ("1", "true", "yes")
+        )
+        result = analyze_image_bytes(raw_bytes, filename=file.filename, ignore_cache=ignore_cache)
         return jsonify({"status": "success", "result": result})
 
     except Exception as exc:

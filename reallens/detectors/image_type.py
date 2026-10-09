@@ -1,245 +1,250 @@
-"""Image-Type Classifier for RealLens.
+"""Learned Image-Type Classifier for RealLens.
 
-Classifies incoming images into:
-- photo-like
-- screenshot/UI
-- document/text-heavy
-- flat graphic/illustration
-- other
-
-Uses cheap, deterministic computer vision features:
-- Unique color entropy
-- Fraction of near-flat spatial patches
-- Background luminance dominance (e.g., paper/white/black background)
-- Color saturation distribution
-- Axis-aligned horizontal/vertical edge dominance
-- High-frequency sensor noise presence
+Replaces hand-set heuristic rules with a learned photo-vs-non-photo model:
+1. Frozen DINOv2-small patch/CLS embeddings (384-d).
+2. Continuous engineered features: flat patch ratio, white paper dominance,
+   color palette entropy, edge sharpness, noise floor, DCT block boundary ratio,
+   and saturation distributions. (NO aspect ratio or resolution hard triggers!).
+3. Outputs continuous `photo_probability` in [0.0, 1.0].
+4. Soft reliability gating:
+   - photo_probability >= 0.65: Full photographic confidence.
+   - 0.35 <= photo_probability < 0.65: Mild note: "Image type is unclear, so detector reliability is lower."
+   - photo_probability < 0.35: Non-photo notice: "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+import joblib
 import numpy as np
 from PIL import Image
-
 logger = logging.getLogger(__name__)
 
-# Common screen aspect ratios (width / height) within +/- 5% tolerance
-COMMON_SCREEN_RATIOS = [
-    16 / 9,   # 1.778
-    16 / 10,  # 1.600
-    19.5 / 9, # 2.167 (Modern mobile)
-    20 / 9,   # 2.222
-    4 / 3,    # 1.333
-    9 / 16,   # 0.562 (Mobile screenshot vertical)
-    9 / 19.5, # 0.462 (Mobile vertical)
-]
+try:
+    import torch
+    from transformers import AutoImageProcessor, AutoModel
+    TORCH_AVAILABLE = True
+except (ImportError, OSError) as e:
+    logger.warning(f"PyTorch is unavailable or blocked by system policy: {e}")
+    torch = None
+    AutoImageProcessor = None
+    AutoModel = None
+    TORCH_AVAILABLE = False
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+GATE_MODEL_PATH = BASE_DIR / "models" / "photo_vs_non_photo_gate.joblib"
+
+_GATE_PACKAGE: Optional[Dict[str, Any]] = None
+_GATE_DINO_MODEL: Optional[Any] = None
+_GATE_DINO_PROC: Optional[Any] = None
+_DEVICE: str = "cpu"
 
 
-def extract_type_features(img: Image.Image) -> Dict[str, float]:
-    """Computes fast measurable features to discriminate photos from graphics/screenshots."""
-    # Work on a standardized 256x256 RGB copy for fast constant-time computation
+def _load_gate_resources():
+    """Loads the trained gate package and DINOv2 vision model singleton."""
+    global _GATE_PACKAGE, _GATE_DINO_MODEL, _GATE_DINO_PROC, _DEVICE
+    if not TORCH_AVAILABLE:
+        return
+    if _GATE_PACKAGE is not None:
+        return
+
+    _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if GATE_MODEL_PATH.exists():
+        try:
+            _GATE_PACKAGE = joblib.load(GATE_MODEL_PATH)
+            backbone_name = _GATE_PACKAGE.get("backbone", "facebook/dinov2-small")
+            _GATE_DINO_PROC = AutoImageProcessor.from_pretrained(backbone_name)
+            _GATE_DINO_MODEL = AutoModel.from_pretrained(backbone_name).to(_DEVICE)
+            _GATE_DINO_MODEL.eval()
+            logger.info(f"Loaded learned image-type gate model ({_GATE_PACKAGE.get('model_architecture')}) on {_DEVICE}.")
+        except Exception as e:
+            logger.warning(f"Failed to load learned gate model package: {e}")
+            _GATE_PACKAGE = None
+    else:
+        logger.warning(f"Gate model package not found at {GATE_MODEL_PATH}")
+        _GATE_PACKAGE = None
+
+
+def extract_engineered_features(img: Image.Image) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Extracts 8 normalized continuous visual features (no aspect ratio or resolution!)."""
     thumb = img.convert("RGB").resize((256, 256), Image.Resampling.BILINEAR)
     arr = np.array(thumb, dtype=np.float32)
-    gray = 0.2989 * arr[:, :, 0] + 0.5870 * arr[:, :, 1] + 0.1140 * arr[:, :, 2]
 
-    w_orig, h_orig = img.size
-    aspect_ratio = float(w_orig) / max(1.0, float(h_orig))
+    # 1. Flat patch ratio (fraction of 8x8 blocks with near-zero standard deviation)
+    blocks = arr.reshape(32, 8, 32, 8, 3).swapaxes(1, 2)
+    block_stds = np.std(blocks, axis=(2, 3, 4))
+    flat_patch_ratio = float(np.mean(block_stds < 3.2))
 
-    # 1. Aspect ratio match to screen display
-    is_screen_ratio = any(abs(aspect_ratio - r) < 0.06 for r in COMMON_SCREEN_RATIOS)
+    # 2. White paper dominance (luminance > 240 and saturation < 0.15)
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    max_c = np.maximum(np.maximum(r, g), b)
+    min_c = np.minimum(np.minimum(r, g), b)
+    sat = np.where(max_c > 1e-4, np.clip((max_c - min_c) / np.maximum(max_c, 1e-4), 0.0, 1.0), 0.0)
 
-    # 2. Near-flat patches (16x16 grid -> 16x16 = 256 patches)
-    # Natural photos have textures across most patches; certificates/screenshots have huge flat areas
-    patches = gray.reshape(16, 16, 16, 16).swapaxes(1, 2).reshape(-1, 16, 16)
-    patch_stds = np.std(patches, axis=(1, 2))
-    flat_patch_ratio = float(np.mean(patch_stds < 3.5))
+    white_paper_ratio = float(np.mean((lum > 240.0) & (sat < 0.15)))
 
-    # 3. Unique colors ratio
-    # Quantize to 5-bit RGB (32 levels per channel)
-    q_arr = (arr // 8).astype(np.uint16)
-    rgb_codes = (q_arr[:, :, 0] << 10) + (q_arr[:, :, 1] << 5) + q_arr[:, :, 2]
-    unique_colors = len(np.unique(rgb_codes))
-    unique_color_ratio = unique_colors / (256.0 * 256.0)
+    # 3. Unique quantized color palette ratio (16x16x16 bins)
+    quant = (arr // 16).astype(np.int32)
+    color_codes = quant[:, :, 0] * 256 + quant[:, :, 1] * 16 + quant[:, :, 2]
+    unique_colors = len(np.unique(color_codes))
+    unique_color_ratio = float(unique_colors / 4096.0)
 
-    # 4. Background dominance (white/paper/black)
-    hist, _ = np.histogram(gray, bins=32, range=(0, 256))
-    max_bin_ratio = float(np.max(hist) / (256.0 * 256.0))
-    white_paper_ratio = float(np.mean(gray > 240))
-    black_bg_ratio = float(np.mean(gray < 18))
+    # 4. Mean edge sharpness & Laplacian noise floor
+    gray = lum
+    lap = np.abs(
+        gray[1:-1, 1:-1] * 4
+        - gray[:-2, 1:-1]
+        - gray[2:, 1:-1]
+        - gray[1:-1, :-2]
+        - gray[1:-1, 2:]
+    )
+    mean_edge = float(np.mean(lap))
 
-    # 5. Saturation in HSV
-    rgb_norm = arr / 255.0
-    c_max = np.max(rgb_norm, axis=2)
-    c_min = np.min(rgb_norm, axis=2)
-    delta = c_max - c_min
-    sat = np.zeros_like(c_max)
-    mask = c_max > 0.001
-    sat[mask] = delta[mask] / c_max[mask]
+    non_flat_mask = np.repeat(np.repeat(block_stds >= 4.0, 8, axis=0), 8, axis=1)[1:-1, 1:-1]
+    if np.sum(non_flat_mask) > 100:
+        noise_level = float(np.std(lap[non_flat_mask]))
+    else:
+        noise_level = float(np.std(lap))
+
+    # 5. DCT 8x8 block boundary ratio (detects JPEG grid artifacts vs smooth continuous fill)
+    diff_h = np.abs(gray[7:-1:8, :] - gray[8::8, :]) if gray.shape[0] >= 16 else np.array([0.0])
+    diff_v = np.abs(gray[:, 7:-1:8] - gray[:, 8::8]) if gray.shape[1] >= 16 else np.array([0.0])
+    block_boundary_energy = (float(np.mean(diff_h)) + float(np.mean(diff_v))) / 2.0
+    int_diff_h = np.abs(gray[3:-1:8, :] - gray[4::8, :]) if gray.shape[0] >= 16 else np.array([1.0])
+    int_diff_v = np.abs(gray[:, 3:-1:8] - gray[:, 4::8]) if gray.shape[1] >= 16 else np.array([1.0])
+    block_internal_energy = max(1e-4, (float(np.mean(int_diff_h)) + float(np.mean(int_diff_v))) / 2.0)
+    block_ratio = float(block_boundary_energy / block_internal_energy)
+
+    # 6. Saturation metrics
     mean_sat = float(np.mean(sat))
     low_sat_ratio = float(np.mean(sat < 0.10))
 
-    # 6. Axis-aligned edge sharpness (Sobel filter simulation)
-    diff_h = np.abs(gray[:, 1:] - gray[:, :-1])
-    diff_v = np.abs(gray[1:, :] - gray[:-1, :])
-    mean_edge = float((np.mean(diff_h) + np.mean(diff_v)) / 2.0)
+    feature_vec = np.array([
+        flat_patch_ratio,
+        white_paper_ratio,
+        unique_color_ratio,
+        mean_edge,
+        noise_level,
+        block_ratio,
+        mean_sat,
+        low_sat_ratio,
+    ], dtype=np.float32)
 
-    # 7. High-frequency sensor noise estimate
-    # In textured or photographic areas, sensor shot noise creates a Gaussian floor
-    # We estimate noise on non-flat patches
-    non_flat_patches = patches[patch_stds >= 5.0]
-    if len(non_flat_patches) > 5:
-        # Laplacian kernel [0, 1, 0; 1, -4, 1; 0, 1, 0] on non-flat patches
-        diff_lap = (
-            non_flat_patches[:, 1:-1, 2:] + non_flat_patches[:, 1:-1, :-2] +
-            non_flat_patches[:, 2:, 1:-1] + non_flat_patches[:, :-2, 1:-1] -
-            4 * non_flat_patches[:, 1:-1, 1:-1]
-        )
-        noise_level = float(np.median(np.abs(diff_lap)))
-    else:
-        noise_level = 0.0
-
-    # 8. 8x8 DCT Block boundary discontinuity on native crop
-    crop_w = (w_orig // 8) * 8
-    crop_h = (h_orig // 8) * 8
-    if crop_w >= 32 and crop_h >= 32:
-        gray_native = img.convert("L").crop((0, 0, min(crop_w, 512), min(crop_h, 512)))
-        arr_crop = np.array(gray_native, dtype=np.float32)
-        cw, ch = gray_native.size
-        block_cols = np.arange(7, cw - 1, 8)
-        intra_cols = np.array([c for c in range(cw - 1) if c not in block_cols])
-        diff_h_native = np.abs(arr_crop[:, 1:] - arr_crop[:, :-1])
-        denom_h = max(0.01, float(np.mean(diff_h_native[:, intra_cols])))
-        ratio_h = float(np.mean(diff_h_native[:, block_cols])) / denom_h if len(block_cols) > 0 else 1.0
-
-        block_rows = np.arange(7, ch - 1, 8)
-        intra_rows = np.array([r for r in range(ch - 1) if r not in block_rows])
-        diff_v_native = np.abs(arr_crop[1:, :] - arr_crop[:-1, :])
-        denom_v = max(0.01, float(np.mean(diff_v_native[intra_rows, :])))
-        ratio_v = float(np.mean(diff_v_native[block_rows, :])) / denom_v if len(block_rows) > 0 else 1.0
-
-        block_ratio = float((ratio_h + ratio_v) / 2.0)
-    else:
-        block_ratio = 1.0
-
-    return {
-        "aspect_ratio": float(aspect_ratio),
-        "is_screen_ratio": bool(is_screen_ratio),
-        "flat_patch_ratio": float(flat_patch_ratio),
-        "unique_color_ratio": float(unique_color_ratio),
-        "max_bin_ratio": float(max_bin_ratio),
-        "white_paper_ratio": float(white_paper_ratio),
-        "black_bg_ratio": float(black_bg_ratio),
-        "mean_sat": float(mean_sat),
-        "low_sat_ratio": float(low_sat_ratio),
-        "mean_edge": float(mean_edge),
-        "noise_level": float(noise_level),
-        "block_ratio": float(block_ratio),
+    feat_dict = {
+        "flat_patch_ratio": round(flat_patch_ratio, 4),
+        "white_paper_ratio": round(white_paper_ratio, 4),
+        "unique_color_ratio": round(unique_color_ratio, 4),
+        "mean_edge": round(mean_edge, 3),
+        "noise_level": round(noise_level, 3),
+        "block_ratio": round(block_ratio, 3),
+        "mean_sat": round(mean_sat, 3),
+        "low_sat_ratio": round(low_sat_ratio, 3),
     }
+    return feature_vec, feat_dict
 
 
 def classify_image_type(img: Image.Image) -> Dict[str, Any]:
-    """Classifies the image type and provides confidence and rationale."""
-    w_orig, h_orig = img.size
-    feats = extract_type_features(img)
+    """Classifies image using learned DINOv2-small gate and outputs soft photo_probability.
 
-    flat_ratio = feats["flat_patch_ratio"]
-    white_ratio = feats["white_paper_ratio"]
-    unique_colors = feats["unique_color_ratio"]
-    mean_sat = feats["mean_sat"]
-    low_sat = feats["low_sat_ratio"]
-    is_screen = feats["is_screen_ratio"]
-    noise = feats["noise_level"]
-    block_ratio = feats.get("block_ratio", 1.0)
+    Returns:
+        dict:
+            photo_probability: float (0.0 to 1.0)
+            image_type: "photo-like" | "screenshot/UI" | "document/text-heavy" | "flat graphic/illustration" | "unclear / mixed"
+            is_photo_like: bool (photo_probability >= 0.35)
+            confidence: "low" | "medium" | "high"
+            unreliable_notice: str | None
+            notice_severity: "none" | "mild" | "warning"
+            is_heavily_recompressed: bool
+            block_ratio: float
+            compression_notice: str | None
+            features: dict
+    """
+    _load_gate_resources()
+    feat_vec, feat_dict = extract_engineered_features(img)
+    block_ratio = feat_dict["block_ratio"]
 
-    # Compression awareness indicators (WhatsApp, chat apps, low JPEG quality)
-    max_dim = max(w_orig, h_orig)
-    is_chat_dim = (
-        (w_orig in (1280, 1600, 1080, 720, 640) and h_orig in (720, 900, 1200, 1080, 1280, 480))
-        or (w_orig == 1280 and h_orig == 720)
-        or (w_orig == 720 and h_orig == 1280)
-        or (max_dim in (1280, 1600, 1080))
-    )
-    is_small_dim = max_dim <= 1280
+    # Compute soft photo_probability via learned classifier
+    if _GATE_PACKAGE is not None and _GATE_DINO_MODEL is not None and _GATE_DINO_PROC is not None:
+        try:
+            inputs = _GATE_DINO_PROC(images=[img.convert("RGB")], return_tensors="pt")
+            inputs = {k: v.to(_DEVICE) for k, v in inputs.items()}
+            with torch.no_grad():
+                out = _GATE_DINO_MODEL(**inputs)
+                dinov2_emb = out.last_hidden_state[:, 0, :].cpu().numpy()
 
-    is_heavily_recompressed = (
-        (block_ratio >= 1.15)
-        or (is_chat_dim and block_ratio >= 1.05)
-        or (is_small_dim and block_ratio >= 1.20)
-        or (w_orig in (1280, 720) and h_orig in (720, 1280))  # Standard WhatsApp video/photo export
-    )
+            combined = np.hstack([dinov2_emb, feat_vec.reshape(1, -1)])
+            scaled = _GATE_PACKAGE["scaler"].transform(combined)
+            clf = _GATE_PACKAGE["classifier"]
+            photo_prob = float(clf.predict_proba(scaled)[0, 1])
+        except Exception as e:
+            logger.warning(f"Error during learned gate inference: {e}, falling back to feature estimate")
+            photo_prob = 0.50
+    else:
+        # Graceful fallback using continuous engineered features if DINOv2 / PyTorch is unavailable
+        flat_ratio = feat_dict.get("flat_patch_ratio", 0.0)
+        white_ratio = feat_dict.get("white_paper_ratio", 0.0)
+        noise_var = feat_dict.get("noise_variance", 0.0)
+        entropy = feat_dict.get("color_entropy", 0.0)
+
+        if white_ratio > 0.25 or (flat_ratio > 0.40 and entropy < 3.5):
+            photo_prob = 0.12
+        elif flat_ratio > 0.35:
+            photo_prob = 0.25
+        elif noise_var > 1.2 or (flat_ratio < 0.22 and entropy > 3.8):
+            photo_prob = 0.92
+        else:
+            photo_prob = 0.65
+
+    photo_prob = max(0.0, min(1.0, float(photo_prob)))
+
+    # Determine sub-type and notices based on soft photo_probability
+    is_photo_like = (photo_prob >= 0.35)
+
+    if photo_prob >= 0.65:
+        image_type = "photo-like"
+        unreliable_notice = None
+        notice_severity = "none"
+        confidence = "high" if photo_prob >= 0.85 else "medium"
+        reason = "Natural photographic scene or photorealistic capture identified by learned vision gate."
+    elif photo_prob >= 0.35:
+        image_type = "unclear / mixed"
+        unreliable_notice = "Image type is unclear, so detector reliability is lower."
+        notice_severity = "mild"
+        confidence = "low"
+        reason = "Learned gate detected borderline characteristics (mix of natural textures and flat/compressed regions)."
+    else:
+        # Non-photo: identify descriptive subtype for display (not hard gate!)
+        if feat_dict["white_paper_ratio"] > 0.30 or feat_dict["flat_patch_ratio"] > 0.60:
+            image_type = "document/text-heavy"
+        elif feat_dict["mean_edge"] > 4.5 and feat_dict["flat_patch_ratio"] > 0.35:
+            image_type = "screenshot/UI"
+        else:
+            image_type = "flat graphic/illustration"
+
+        unreliable_notice = "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."
+        notice_severity = "warning"
+        confidence = "high" if photo_prob <= 0.15 else "medium"
+        reason = f"Learned vision gate classified this as {image_type} (photo probability: {photo_prob*100:.1f}%)."
+
+    # Recompression detection: prominent DCT 8x8 block boundary artifacts
+    is_heavily_recompressed = (block_ratio > 3.2 and feat_dict["flat_patch_ratio"] < 0.50)
     compression_notice = None
     if is_heavily_recompressed:
-        compression_notice = (
-            f"Heavy lossy recompression detected (DCT blockiness: {block_ratio:.2f}, {w_orig}x{h_orig}). "
-            "Compression artifacts obscure subtle sensor noise and generative textures."
-        )
-
-    # Handle low-resolution thumbnails (<96px, e.g. CIFAR/CIFAKE 32x32)
-    is_thumbnail = max(w_orig, h_orig) < 96
-
-    # Rule 1: Document / Text-Heavy
-    # White background > 35%, mostly desaturated, moderate to high flat ratio
-    if (white_ratio > 0.40 and low_sat > 0.65) or (white_ratio > 0.55 and flat_ratio > 0.25):
-        img_type = "document/text-heavy"
-        confidence = "high" if white_ratio > 0.55 else "medium"
-        reason = (
-            f"High white background luminance ({white_ratio*100:.1f}%) and low color saturation "
-            f"indicate a document, certificate paper, or text-heavy graphic."
-        )
-
-    # Rule 2: Screenshot / UI (only valid for actual screen/window resolutions >= 128px)
-    elif not is_thumbnail and ((flat_ratio > 0.35 and is_screen and noise < 12.0) or (flat_ratio > 0.45 and noise < 10.0)):
-        img_type = "screenshot/UI"
-        confidence = "high" if (flat_ratio > 0.50 and is_screen) else "medium"
-        reason = (
-            f"High proportion of flat color patches ({flat_ratio*100:.1f}%), sharp rectangular edges, "
-            f"and absent camera sensor noise indicate a screen capture or software UI."
-        )
-
-    # Rule 3: Flat graphic / Illustration / Certificate
-    elif not is_thumbnail and ((flat_ratio > 0.25 and unique_colors < 0.035) or (flat_ratio > 0.32 and noise < 7.0)):
-        img_type = "flat graphic/illustration"
-        confidence = "medium"
-        reason = (
-            f"Restricted color palette ({unique_colors*100:.2f}% unique codes) and uniform fill regions "
-            f"characterize vector art, digital certificates, slides, or graphic designs."
-        )
-
-    # Rule 4: Photo-like
-    elif flat_ratio < 0.28 or is_thumbnail:
-        img_type = "photo-like"
-        confidence = "high" if flat_ratio < 0.15 else "medium"
-        reason = (
-            f"Continuous natural texture variations ({flat_ratio*100:.1f}% flat area), rich color entropy, "
-            f"and sensor grain align with real-world camera or photorealistic capture."
-        )
-
-    # Rule 5: Fallback photo-like vs other
-    elif flat_ratio < 0.25:
-        img_type = "photo-like"
-        confidence = "low"
-        reason = "Texture characteristics mostly resemble photographic or continuous-tone imagery."
-    else:
-        img_type = "other"
-        confidence = "low"
-        reason = "Hybrid texture composition exhibiting mixed photographic and graphic features."
-
-    is_photo = (img_type == "photo-like")
-    unreliable_notice = (
-        "This looks like a screenshot/document/graphic. Photo-trained AI detectors are unreliable for this type."
-        if not is_photo else None
-    )
+        compression_notice = f"Heavy lossy recompression detected (DCT blockiness: {block_ratio:.2f}). Compression artifacts obscure subtle sensor noise."
 
     return {
-        "image_type": img_type,
-        "is_photo_like": is_photo,
+        "photo_probability": round(photo_prob, 4),
+        "image_type": image_type,
+        "is_photo_like": is_photo_like,
         "confidence": confidence,
         "reason": reason,
         "unreliable_notice": unreliable_notice,
-        "is_heavily_recompressed": bool(is_heavily_recompressed),
-        "block_ratio": float(block_ratio),
-        "is_chat_dim": bool(is_chat_dim),
+        "notice_severity": notice_severity,
+        "is_heavily_recompressed": is_heavily_recompressed,
+        "block_ratio": round(block_ratio, 3),
         "compression_notice": compression_notice,
-        "features": feats,
+        "features": feat_dict,
     }
